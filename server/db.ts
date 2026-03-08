@@ -339,12 +339,30 @@ function mapTrade(row: any): Trade {
   };
 }
 
+/** Map Kalshi API status strings to the DB enum values */
+function normalizeTradeStatus(status: string | null | undefined): string {
+  switch ((status ?? "").toLowerCase()) {
+    case "filled":
+    case "executed":
+    case "resting":  // partially filled / resting on book → treat as filled
+      return "filled";
+    case "cancelled":
+    case "canceled":
+      return "cancelled";
+    case "settled":
+      return "settled";
+    default:
+      return "pending";
+  }
+}
+
 export async function insertTrade(data: NewTrade): Promise<number> {
   const costBasis = String((data.priceCents / 100) * data.contracts);
+  const status = normalizeTradeStatus(data.status);
   const result = await exec(
-    `INSERT INTO trades_v2 (user_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status, kalshi_order_id)
+    `INSERT INTO trades_v2 (user_id, order_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.userId, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, data.status ?? "filled", data.kalshiOrderId ?? null]
+    [data.userId, data.kalshiOrderId ?? null, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, status]
   );
   return result.insertId;
 }

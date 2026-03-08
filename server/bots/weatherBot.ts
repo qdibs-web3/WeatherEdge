@@ -34,6 +34,18 @@ function probForStrike(
 // Kalshi fee: 7% of winnings (gross profit) for taker orders
 const KALSHI_FEE_RATE = 0.07;
 
+// ─── Safety Guardrails ────────────────────────────────────────────────────────
+//
+// NEVER trade contracts priced below this threshold.
+// 1-4 cent markets = counterparty is 96-99% certain. These are
+// "already settled by reality" traps — the market knows something you don't.
+const MIN_PRICE_CENTS = 5;
+//
+// NEVER trade a market closing within this many minutes.
+// If a market closes in < 2 hours, the day's actual high is often already
+// determined and the price reflects near-certainty, not forecast uncertainty.
+const MIN_MINUTES_TO_CLOSE = 120;
+
 /**
  * Expected value in cents for buying one contract at priceCents.
  * Win: profit = (100 - priceCents) * (1 - KALSHI_FEE_RATE)
@@ -43,6 +55,12 @@ function calcEV(ourProb: number, priceCents: number): number {
   const grossProfit = 100 - priceCents;
   const netProfit   = grossProfit * (1 - KALSHI_FEE_RATE);
   return ourProb * netProfit - (1 - ourProb) * priceCents;
+}
+
+/** Returns minutes until the market closes. Returns Infinity if no close_time. */
+function minutesToClose(market: KalshiMarket): number {
+  if (!market.close_time) return Infinity;
+  return (new Date(market.close_time).getTime() - Date.now()) / 60000;
 }
 
 /**
@@ -421,6 +439,15 @@ export class WeatherBot {
       // Skip markets with insufficient liquidity
       if ((market.open_interest ?? 0) < this.config.minLiquidity) continue;
 
+      // ── GUARD: Skip markets closing too soon ──────────────────────────────
+      // If a market closes in < 2 hours, the day's high is likely already known
+      // and the price is "settled by reality" — not a forecast edge opportunity.
+      const minsLeft = minutesToClose(market);
+      if (minsLeft < MIN_MINUTES_TO_CLOSE) {
+        console.log(`[WeatherBot] Skipping ${market.ticker} — closes in ${minsLeft.toFixed(0)} min (< ${MIN_MINUTES_TO_CLOSE})`);
+        continue;
+      }
+
       // Skip markets we already hold a position in
       if (this.openPositionTickers.has(market.ticker)) {
         console.log(`[WeatherBot] Skipping ${market.ticker} — already have open position`);
@@ -445,7 +472,8 @@ export class WeatherBot {
 
       // ── YES side ──
       const yesAsk = market.yes_ask;
-      if (yesAsk > 0 && yesAsk <= this.config.maxPriceCents) {
+      // GUARD: Never trade below MIN_PRICE_CENTS — those are "already decided" markets
+      if (yesAsk >= MIN_PRICE_CENTS && yesAsk <= this.config.maxPriceCents) {
         const ev = calcEV(ourProb, yesAsk);
         if (ev >= evThreshold) {
           const marketProb  = yesAsk / 100;
@@ -465,7 +493,8 @@ export class WeatherBot {
       // ── NO side ──
       const noAsk  = market.no_ask;
       const noProb = 1 - ourProb;
-      if (noAsk > 0 && noAsk <= this.config.maxPriceCents) {
+      // GUARD: Never trade below MIN_PRICE_CENTS — those are "already decided" markets
+      if (noAsk >= MIN_PRICE_CENTS && noAsk <= this.config.maxPriceCents) {
         const ev = calcEV(noProb, noAsk);
         if (ev >= evThreshold) {
           const marketProb  = noAsk / 100;
