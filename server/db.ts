@@ -201,7 +201,12 @@ export async function deleteSession(id: string): Promise<void> {
 function mapBotConfig(row: any): BotConfig | null {
   if (!row) return null;
   let cities: string[] = [];
-  try { cities = row.enabled_cities ? JSON.parse(row.enabled_cities) : []; } catch {}
+  // TiDB returns JSON columns as already-parsed JS values; handle both string and array
+  if (Array.isArray(row.enabled_cities)) {
+    cities = row.enabled_cities;
+  } else if (typeof row.enabled_cities === 'string' && row.enabled_cities) {
+    try { cities = JSON.parse(row.enabled_cities); } catch {}
+  }
   return {
     id: row.id,
     userId: row.user_id,
@@ -342,7 +347,7 @@ function mapTrade(row: any): Trade {
 export async function insertTrade(data: NewTrade): Promise<number> {
   const costBasis = String((data.priceCents / 100) * data.contracts);
   const result = await exec(
-    `INSERT INTO trades_v2 (user_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status, kalshi_order_id)
+    `INSERT INTO trades_v2 (user_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status, order_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [data.userId, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, data.status ?? "filled", data.kalshiOrderId ?? null]
   );
@@ -357,6 +362,11 @@ export async function getTradesByUser(userId: number, limit = 50, offset = 0): P
     [userId]
   );
   return rows.map(mapTrade);
+}
+
+export async function getTradeCount(userId: number): Promise<number> {
+  const rows = await q("SELECT COUNT(*) as cnt FROM trades_v2 WHERE user_id = ?", [userId]);
+  return Number(rows[0]?.cnt ?? 0);
 }
 
 export async function getTradeStats(userId: number) {
@@ -391,7 +401,7 @@ export async function getDailyPnl(userId: number, days = 30) {
 
 export async function getOpenTrades(userId: number): Promise<Trade[]> {
   const rows = await q(
-    "SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'filled' ORDER BY created_at DESC",
+    "SELECT * FROM trades_v2 WHERE user_id = ? AND status IN ('filled','pending') ORDER BY created_at DESC",
     [userId]
   );
   return rows.map(mapTrade);
@@ -478,6 +488,9 @@ export async function getLatestForecasts() {
     sigma: r.sigma,
     shortForecast: r.short_forecast,
     detailedForecast: r.detailed_forecast,
+    windSpeed: r.wind_speed ?? null,
+    windDirection: r.wind_direction ?? null,
+    precipChance: r.precip_chance != null ? Number(r.precip_chance) : null,
     updatedAt: r.fetched_at,
   }));
 }
@@ -490,17 +503,23 @@ export async function upsertForecast(data: {
   sigma: number;
   shortForecast?: string;
   detailedForecast?: string;
+  windSpeed?: string;
+  windDirection?: string;
+  precipChance?: number | null;
 }) {
   await q(
     `INSERT INTO forecast_cache_v2
-       (city_code, city_name, forecast_high, low_temp, sigma, short_forecast, detailed_forecast, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+       (city_code, city_name, forecast_high, low_temp, sigma, short_forecast, detailed_forecast, wind_speed, wind_direction, precip_chance, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
      ON DUPLICATE KEY UPDATE
        forecast_high = VALUES(forecast_high),
        low_temp = VALUES(low_temp),
        sigma = VALUES(sigma),
        short_forecast = VALUES(short_forecast),
        detailed_forecast = VALUES(detailed_forecast),
+       wind_speed = VALUES(wind_speed),
+       wind_direction = VALUES(wind_direction),
+       precip_chance = VALUES(precip_chance),
        fetched_at = NOW()`,
     [
       data.cityCode,
@@ -510,7 +529,9 @@ export async function upsertForecast(data: {
       data.sigma,
       data.shortForecast ?? null,
       data.detailedForecast ?? null,
+      data.windSpeed ?? null,
+      data.windDirection ?? null,
+      data.precipChance ?? null,
     ]
   );
 }
-

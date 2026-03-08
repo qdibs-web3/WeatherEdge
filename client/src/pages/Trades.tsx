@@ -44,7 +44,7 @@ export default function Trades() {
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { label: "Total Trades", value: stats?.total ?? 0, color: "text-white" },
+          { label: "Total Trades", value: (trades ?? []).length > 0 ? (trades ?? []).length : (stats?.total ?? 0), color: "text-white" },
           { label: "Win Rate", value: `${((stats?.winRate ?? 0) * 100).toFixed(1)}%`, color: "text-blue-400" },
           { label: "Total P&L", value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? "text-green-400" : "text-red-400" },
           { label: "Open Positions", value: openTrades?.length ?? 0, color: "text-yellow-400" },
@@ -72,7 +72,7 @@ export default function Trades() {
                 <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
                   <div>
                     <p className="text-sm font-medium text-white">{t.cityName}</p>
-                    <p className="text-xs text-gray-400">{t.strikeDesc} · {t.side?.toUpperCase()} · {t.contracts} contracts @ {t.entryPrice}¢</p>
+                    <p className="text-xs text-gray-400">{t.strikeDesc} · {t.side?.toUpperCase()} · {t.contracts} contracts @ {t.priceCents}¢</p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm text-white font-medium">${parseFloat(t.costBasis ?? 0).toFixed(2)}</p>
@@ -136,8 +136,8 @@ export default function Trades() {
                           </Badge>
                         </td>
                         <td className="px-4 py-3 text-gray-300">{t.contracts}</td>
-                        <td className="px-4 py-3 text-gray-300">{t.entryPrice}¢</td>
-                        <td className="px-4 py-3 text-gray-300">{t.exitPrice ? `${t.exitPrice}¢` : '—'}</td>
+                        <td className="px-4 py-3 text-gray-300">{t.priceCents != null ? `${t.priceCents}¢` : '—'}</td>
+                        <td className="px-4 py-3 text-gray-300">{t.settlementValue != null ? `$${parseFloat(t.settlementValue).toFixed(2)}` : '—'}</td>
                         <td className={`px-4 py-3 font-semibold ${pnl > 0 ? 'text-green-400' : pnl < 0 ? 'text-red-400' : 'text-gray-400'}`}>
                           {t.pnl != null ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
                         </td>

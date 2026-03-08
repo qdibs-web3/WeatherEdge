@@ -47,6 +47,9 @@ export interface NwsForecast {
   lowTemp: number;
   shortForecast: string;
   detailedForecast: string;
+  windSpeed: string;
+  windDirection: string;
+  precipChance: number | null;
   forecastDate: string;
   fetchedAt: string;
 }
@@ -120,6 +123,9 @@ export class NwsService {
           : Math.round(nightPeriod.temperature * 9 / 5 + 32)
         : highTemp - 15;
 
+      // Extract precip chance from probabilityOfPrecipitation if available
+      const precipChance = dayPeriod.probabilityOfPrecipitation?.value ?? null;
+
       const forecast: NwsForecast = {
         cityCode,
         cityName: city.name,
@@ -127,6 +133,9 @@ export class NwsService {
         lowTemp,
         shortForecast: dayPeriod.shortForecast,
         detailedForecast: dayPeriod.detailedForecast,
+        windSpeed: dayPeriod.windSpeed ?? "",
+        windDirection: dayPeriod.windDirection ?? "",
+        precipChance,
         forecastDate: todayStr,
         fetchedAt: new Date().toISOString(),
       };

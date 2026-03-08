@@ -76,6 +76,10 @@ const CITY_TIMEZONES: Record<string, string> = {
   PHX: "America/Phoenix",
   MSP: "America/Chicago",
   SAT: "America/Chicago",
+  SAN: "America/Chicago",
+  PHI: "America/New_York",
+  SJC: "America/Los_Angeles",
+  JAX: "America/New_York",
   MSY: "America/Chicago",
   DEN: "America/Denver",
 };
@@ -147,7 +151,8 @@ export interface TradeSignal {
   priceCents: number;
   ourProb: number;
   marketProb: number;
-  ev: number;
+  ev: number;               // EV per contract (cents)
+  totalExpectedProfit: number; // ev × contracts (cents) — used for ranking
   contracts: number;
   forecastTemp: number;
   strikeDesc: string;
@@ -272,6 +277,9 @@ export class WeatherBot {
             sigma: cityDef?.sigma ?? 3.0,
             shortForecast: f.shortForecast,
             detailedForecast: f.detailedForecast,
+            windSpeed: f.windSpeed,
+            windDirection: f.windDirection,
+            precipChance: f.precipChance,
           });
         })
       );
@@ -295,28 +303,67 @@ export class WeatherBot {
         }
       }
 
-      // 3. Sort by EV descending
-      signals.sort((a, b) => b.ev - a.ev);
+      // 3. Sort by total expected profit (EV × contracts) descending
+      // This prioritises trades that make the most money in dollar terms,
+      // not just the highest per-contract edge.
+      signals.sort((a, b) => b.totalExpectedProfit - a.totalExpectedProfit);
       this.lastSignals = signals;
 
       if (signals.length > 0) {
+        const top = signals[0];
+        const topProfitDollars = (top.totalExpectedProfit / 100).toFixed(2);
         console.log(`[WeatherBot] Scan complete [${windowType}] — ${signals.length} signal(s) found`);
-        await this.log("signal", `Scan [${windowType}]: ${signals.length} signal(s) — top EV: ${signals[0].ev.toFixed(1)}¢ on ${signals[0].cityName} ${signals[0].side.toUpperCase()} ${signals[0].strikeDesc}`);
+        await this.log("signal", `Scan [${windowType}]: ${signals.length} signal(s) — best: ${top.cityName} ${top.side.toUpperCase()} ${top.strikeDesc} @ ${top.priceCents}¢ x${top.contracts} | EV: +${top.ev.toFixed(1)}¢/contract | Expected profit: +$${topProfitDollars}`);
       } else {
         console.log(`[WeatherBot] Scan complete [${windowType}] — no signals above threshold`);
       }
 
       // 4. Execute top signals if live trading
       if (!this.config.dryRun && signals.length > 0) {
+        // Fetch live balance before executing any trades
+        let availableBalanceCents = 0;
+        try {
+          const balanceData = await this.kalshi.getBalance();
+          // Kalshi returns balance in cents
+          availableBalanceCents = balanceData.balance ?? 0;
+          console.log(`[WeatherBot] Live balance: $${(availableBalanceCents / 100).toFixed(2)} — ${signals.length} signal(s) queued`);
+        } catch (err: any) {
+          console.error(`[WeatherBot] Could not fetch balance, skipping trades:`, err.message);
+          await this.log("error", `Balance check failed: ${err.message}`);
+          // Skip all trades if we can't verify balance
+          availableBalanceCents = 0;
+        }
+
         // In high-freq windows, execute top 5; in low-freq, be more conservative (top 2)
         const maxTrades = inWindow ? 5 : 2;
+        let spentCents = 0;
+
         for (const signal of signals.slice(0, maxTrades)) {
+          // Cost of this trade in cents: contracts × price_per_contract
+          const tradeCostCents = signal.contracts * signal.priceCents;
+          const remainingBalance = availableBalanceCents - spentCents;
+
+          if (tradeCostCents > remainingBalance) {
+            console.log(`[WeatherBot] Skipping ${signal.cityName} ${signal.side.toUpperCase()} — cost $${(tradeCostCents/100).toFixed(2)} exceeds remaining balance $${(remainingBalance/100).toFixed(2)}`);
+            await this.log("info", `Skipped ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc}: cost $${(tradeCostCents/100).toFixed(2)} > balance $${(remainingBalance/100).toFixed(2)}`);
+            continue;
+          }
+
           await this.executeTrade(signal);
+          spentCents += tradeCostCents;
+        }
+
+        if (spentCents > 0) {
+          console.log(`[WeatherBot] Session spent: $${(spentCents/100).toFixed(2)} of $${(availableBalanceCents/100).toFixed(2)} available`);
         }
       } else if (this.config.dryRun && signals.length > 0) {
-        // Paper mode — log signals but don't execute
+        // Paper mode — fetch balance for display but don't execute
+        let paperBalance = 0;
+        try { paperBalance = (await this.kalshi.getBalance()).balance ?? 0; } catch {}
         for (const signal of signals.slice(0, 3)) {
-          await this.log("signal", `[PAPER] Would trade: ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc} @ ${signal.priceCents}¢ x${signal.contracts} | EV: +${signal.ev.toFixed(1)}¢`);
+          const cost = signal.contracts * signal.priceCents;
+          const expectedProfit = (signal.totalExpectedProfit / 100).toFixed(2);
+          await this.log("signal", `[PAPER] Would trade: ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc} @ ${signal.priceCents}¢ x${signal.contracts} (cost $${(cost/100).toFixed(2)}) | EV: +${signal.ev.toFixed(1)}¢/contract | Expected profit: +$${expectedProfit} | Balance: $${(paperBalance/100).toFixed(2)}`);
         }
       }
 
@@ -361,8 +408,22 @@ export class WeatherBot {
       limit: 20,
     });
 
+    // Determine current local time in this city's timezone
+    const cityTz = CITY_TIMEZONES[city.code] ?? "America/Chicago";
+    const nowLocal = new Date(new Date().toLocaleString("en-US", { timeZone: cityTz }));
+    const localHour = nowLocal.getHours();
+    const localDateStr = nowLocal.toISOString().split("T")[0];
+
     for (const market of markets) {
       if ((market.open_interest ?? 0) < this.config.minLiquidity) continue;
+
+      // Skip same-day markets after 6 PM local city time — outcome is nearly determined
+      if (market.close_time) {
+        const closeDate = market.close_time.split("T")[0];
+        if (closeDate <= localDateStr && localHour >= 18) {
+          continue;
+        }
+      }
 
       const floor = market.floor_strike ?? null;
       const cap   = market.cap_strike ?? null;
@@ -379,7 +440,7 @@ export class WeatherBot {
           signals.push({
             cityCode: city.code, cityName: city.name, ticker: market.ticker,
             side: "yes", priceCents: yesAsk, ourProb, marketProb: yesAsk / 100,
-            ev, contracts, forecastTemp: forecast.highTemp,
+            ev, totalExpectedProfit: ev * contracts, contracts, forecastTemp: forecast.highTemp,
             strikeDesc: this.strikeDesc(floor, cap, strikeType), windowType,
           });
         }
@@ -395,7 +456,7 @@ export class WeatherBot {
           signals.push({
             cityCode: city.code, cityName: city.name, ticker: market.ticker,
             side: "no", priceCents: noAsk, ourProb: noProb, marketProb: noAsk / 100,
-            ev, contracts, forecastTemp: forecast.highTemp,
+            ev, totalExpectedProfit: ev * contracts, contracts, forecastTemp: forecast.highTemp,
             strikeDesc: this.strikeDesc(floor, cap, strikeType), windowType,
           });
         }
@@ -431,6 +492,14 @@ export class WeatherBot {
 
       this.tradesThisSession++;
 
+      // Normalize Kalshi order status to our DB enum ('pending','filled','cancelled','settled')
+      // Kalshi returns: 'resting', 'executed', 'canceled', 'pending', 'open'
+      const rawStatus = result.order?.status ?? "";
+      let dbStatus: "pending" | "filled" | "cancelled" | "settled" = "filled";
+      if (rawStatus === "resting" || rawStatus === "open" || rawStatus === "pending") dbStatus = "pending";
+      else if (rawStatus === "executed") dbStatus = "filled";
+      else if (rawStatus === "canceled" || rawStatus === "cancelled") dbStatus = "cancelled";
+
       await db.insertTrade({
         userId: this.config.userId,
         kalshiOrderId: result.order.order_id ?? null,
@@ -440,7 +509,7 @@ export class WeatherBot {
         side: signal.side,
         priceCents: signal.priceCents,
         contracts: signal.contracts,
-        status: result.order.status ?? "filled",
+        status: dbStatus,
         won: null,
         pnl: null,
         feeCents: null,

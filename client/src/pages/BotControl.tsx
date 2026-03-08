@@ -10,16 +10,17 @@ import { toast } from "sonner";
 import { Bot, Play, Square, Zap, RefreshCw, DollarSign, Target, Shield, MapPin, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 
 const ALL_CITIES = [
-  { code: "NYC", name: "New York City" }, { code: "LAX", name: "Los Angeles" },
-  { code: "CHI", name: "Chicago" }, { code: "HOU", name: "Houston" },
-  { code: "PHX", name: "Phoenix" }, { code: "PHI", name: "Philadelphia" },
-  { code: "SAN", name: "San Antonio" }, { code: "DAL", name: "Dallas" },
-  { code: "SJC", name: "San Jose" }, { code: "ATL", name: "Atlanta" },
-  { code: "JAX", name: "Jacksonville" }, { code: "SFO", name: "San Francisco" },
-  { code: "SEA", name: "Seattle" }, { code: "DEN", name: "Denver" },
-  { code: "BOS", name: "Boston" }, { code: "LAS", name: "Las Vegas" },
-  { code: "OKC", name: "Oklahoma City" }, { code: "MSP", name: "Minneapolis" },
-  { code: "DCA", name: "Washington DC" },
+  { code: "NYC", name: "New York City" },   { code: "LAX", name: "Los Angeles" },
+  { code: "CHI", name: "Chicago" },         { code: "HOU", name: "Houston" },
+  { code: "PHX", name: "Phoenix" },         { code: "PHI", name: "Philadelphia" },
+  { code: "SAN", name: "San Antonio" },     { code: "DAL", name: "Dallas" },
+  { code: "SJC", name: "San Jose" },        { code: "ATL", name: "Atlanta" },
+  { code: "JAX", name: "Jacksonville" },    { code: "SFO", name: "San Francisco" },
+  { code: "SEA", name: "Seattle" },         { code: "DEN", name: "Denver" },
+  { code: "BOS", name: "Boston" },          { code: "LAS", name: "Las Vegas" },
+  { code: "OKC", name: "Oklahoma City" },   { code: "MSP", name: "Minneapolis" },
+  { code: "DCA", name: "Washington DC" },   { code: "MIA", name: "Miami" },
+  { code: "AUS", name: "Austin" },          { code: "MSY", name: "New Orleans" },
 ];
 
 export default function BotControl() {
