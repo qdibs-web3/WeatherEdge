@@ -376,6 +376,8 @@ export class WeatherBot {
       if (!this.config.dryRun && signals.length > 0) {
         const maxTrades = inWindow ? 5 : 2;
         let spentCents = 0;
+        const balanceData = await this.kalshi.getBalance();
+        const availableBalanceCents = balanceData.balance;
 
         for (const signal of signals.slice(0, maxTrades)) {
           // Cost of this trade in cents: contracts × price_per_contract

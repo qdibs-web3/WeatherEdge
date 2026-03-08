@@ -53,14 +53,10 @@ export interface NwsForecast {
   lowTemp: number;
   shortForecast: string;
   detailedForecast: string;
-<<<<<<< HEAD
   windSpeed: string;
   windDirection: string;
   precipChance: number | null;
-  forecastDate: string;
-=======
   forecastDate: string;    // Local date (YYYY-MM-DD) for THIS city's timezone
->>>>>>> 7c141134f19c0e8afdfadcffec8bae412d8ac6cb
   fetchedAt: string;
   hourlyHighTemp: number | null;  // High derived from hourly data — more precise than daily period
   forecastAgeMinutes: number;     // How old is the NWS forecast (freshness indicator)
@@ -162,10 +158,6 @@ export class NwsService {
           : Math.round(nightPeriod.temperature * 9 / 5 + 32)
         : highTemp - 15;
 
-<<<<<<< HEAD
-      // Extract precip chance from probabilityOfPrecipitation if available
-      const precipChance = dayPeriod.probabilityOfPrecipitation?.value ?? null;
-=======
       // ── Step 3: Extract hourly high for today (more precise) ──
       let hourlyHighTemp: number | null = null;
       if (hourlyRes.status === "fulfilled") {
@@ -183,13 +175,15 @@ export class NwsService {
         }
       }
 
+      // ── Extract precip chance from day period ──
+      const precipChance: number | null = dayPeriod.probabilityOfPrecipitation?.value ?? null;
+
       // ── Step 4: Estimate forecast age (how long ago was this NWS run issued?) ──
       // NWS forecast periods include a generatedAt/updateTime in the response
       const generatedAt = forecastRes.value.data?.properties?.generatedAt;
       const forecastAgeMinutes = generatedAt
         ? Math.round((Date.now() - new Date(generatedAt).getTime()) / 60000)
         : -1;
->>>>>>> 7c141134f19c0e8afdfadcffec8bae412d8ac6cb
 
       const forecast: NwsForecast = {
         cityCode,
