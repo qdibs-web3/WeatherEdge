@@ -7,15 +7,14 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
-import { Bot, Play, Square, Zap, RefreshCw, DollarSign, Target, Shield, MapPin, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
+import { Bot, Play, Square, Zap, RefreshCw, DollarSign, Target, Shield, MapPin, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck } from "lucide-react";
 
 const ALL_CITIES = [
   { code: "NYC", name: "New York City" },   { code: "LAX", name: "Los Angeles" },
   { code: "CHI", name: "Chicago" },         { code: "HOU", name: "Houston" },
   { code: "PHX", name: "Phoenix" },         { code: "PHI", name: "Philadelphia" },
-  { code: "SAN", name: "San Antonio" },     { code: "DAL", name: "Dallas" },
-  { code: "SJC", name: "San Jose" },        { code: "ATL", name: "Atlanta" },
-  { code: "JAX", name: "Jacksonville" },    { code: "SFO", name: "San Francisco" },
+  { code: "DAL", name: "Dallas" },
+  { code: "ATL", name: "Atlanta" },         { code: "SFO", name: "San Francisco" },
   { code: "SEA", name: "Seattle" },         { code: "DEN", name: "Denver" },
   { code: "BOS", name: "Boston" },          { code: "LAS", name: "Las Vegas" },
   { code: "OKC", name: "Oklahoma City" },   { code: "MSP", name: "Minneapolis" },
@@ -26,11 +25,13 @@ const ALL_CITIES = [
 export default function BotControl() {
   const { data: status, refetch: refetchStatus } = trpc.bot.getStatus.useQuery(undefined, { refetchInterval: 3000 });
   const { data: config } = trpc.config.getBotConfig.useQuery();
+  const { data: openPaperTrades } = trpc.bot.getOpenTrades.useQuery({ mode: "paper" }, { refetchInterval: 10000 });
   const utils = trpc.useContext();
 
   const [flatBet, setFlatBet] = useState<number>(20);
   const [minEv, setMinEv] = useState<number>(3);
   const [maxPrice, setMaxPrice] = useState<number>(70);
+  const [maxDailyTrades, setMaxDailyTrades] = useState<number>(20);
   const [dryRun, setDryRun] = useState<boolean>(true);
   const [selectedCities, setSelectedCities] = useState<string[]>(ALL_CITIES.map(c => c.code));
 
@@ -40,6 +41,7 @@ export default function BotControl() {
     setFlatBet(config.flatBetDollars ?? 20);
     setMinEv(config.minEvCents ?? 3);
     setMaxPrice(config.maxPriceCents ?? 70);
+    setMaxDailyTrades(config.maxDailyTrades ?? 20);
     setDryRun(config.dryRun ?? true);
     setSelectedCities(
       config.enabledCities && config.enabledCities.length > 0
@@ -65,8 +67,21 @@ export default function BotControl() {
     onError: (e) => toast.error(e.message),
   });
   const saveConfigMutation = trpc.config.saveBotConfig.useMutation({
-    onSuccess: () => { toast.success("Configuration saved!"); utils.config.getBotConfig.invalidate(); },
+    onSuccess: () => { toast.success("Configuration saved!"); utils.config.getBotConfig.invalidate(); utils.bot.getStatus.invalidate(); },
     onError: (e) => toast.error(e.message),
+  });
+  const paperToggleMutation = trpc.config.saveBotConfig.useMutation({
+    onSuccess: () => { utils.config.getBotConfig.invalidate(); utils.bot.getStatus.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const settlePaperMutation = trpc.bot.settlePaperTrades.useMutation({
+    onSuccess: (d) => {
+      toast.success(`Paper settlement complete — ${d.settled} trade(s) settled`);
+      utils.bot.getOpenTrades.invalidate();
+      utils.bot.getTrades.invalidate();
+      utils.bot.getTradeStats.invalidate();
+    },
+    onError: (e) => toast.error(`Settlement failed: ${e.message}`),
   });
 
   const toggleCity = (code: string) => {
@@ -74,7 +89,7 @@ export default function BotControl() {
   };
 
   const handleSave = () => {
-    saveConfigMutation.mutate({ flatBetDollars: flatBet, minEvCents: minEv, maxPriceCents: maxPrice, dryRun, enabledCities: selectedCities });
+    saveConfigMutation.mutate({ flatBetDollars: flatBet, minEvCents: minEv, maxPriceCents: maxPrice, maxDailyTrades, dryRun, enabledCities: selectedCities });
   };
 
   const handleReset = () => {
@@ -82,6 +97,7 @@ export default function BotControl() {
     setFlatBet(config.flatBetDollars ?? 20);
     setMinEv(config.minEvCents ?? 3);
     setMaxPrice(config.maxPriceCents ?? 70);
+    setMaxDailyTrades(config.maxDailyTrades ?? 20);
     setDryRun(config.dryRun ?? true);
     setSelectedCities(
       config.enabledCities && config.enabledCities.length > 0
@@ -156,14 +172,27 @@ export default function BotControl() {
                   <Square className="h-4 w-4 mr-1.5" /> {stopMutation.isPending ? 'Stopping...' : 'Stop Bot'}
                 </Button>
               )}
-              <Button variant="outline" className="border-[#27272a] text-gray-300 hover:text-white" onClick={() => restartMutation.mutate()} disabled={restartMutation.isPending || !isRunning}>
+              <Button className="bg-gray-600 hover:bg-gray-500 text-white" onClick={() => restartMutation.mutate()} disabled={restartMutation.isPending || !isRunning}>
                 <RefreshCw className="h-4 w-4" />
               </Button>
             </div>
 
-            <Button variant="outline" className="w-full border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={() => scanMutation.mutate()} disabled={!isRunning || scanMutation.isPending}>
+            <Button className="w-full bg-blue-600 hover:bg-blue-500 text-white" onClick={() => scanMutation.mutate()} disabled={!isRunning || scanMutation.isPending}>
               <Zap className="h-4 w-4 mr-1.5" /> {scanMutation.isPending ? 'Scanning...' : 'Trigger Manual Scan'}
             </Button>
+
+            {status?.dryRun && (openPaperTrades?.length ?? 0) > 0 && (
+              <Button
+                className="w-full bg-amber-600 hover:bg-amber-500 text-white"
+                onClick={() => settlePaperMutation.mutate()}
+                disabled={settlePaperMutation.isPending}
+              >
+                <ClipboardCheck className="h-4 w-4 mr-1.5" />
+                {settlePaperMutation.isPending
+                  ? 'Settling...'
+                  : `Settle Paper Trades (${openPaperTrades?.length ?? 0} open)`}
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -189,8 +218,8 @@ export default function BotControl() {
                 <Label className="text-gray-300 text-sm">Min EV Threshold</Label>
                 <span className="text-blue-400 text-sm font-semibold">{minEv}¢</span>
               </div>
-              <Slider min={1} max={15} step={1} value={[minEv]} onValueChange={([v]) => setMinEv(v)} className="w-full" />
-              <p className="text-xs text-gray-500">Minimum expected value edge to place a trade</p>
+              <Slider min={2} max={25} step={1} value={[minEv]} onValueChange={([v]) => setMinEv(v)} className="w-full" />
+              <p className="text-xs text-gray-500">Minimum EV edge per contract — higher = fewer but stronger trades</p>
             </div>
 
             <div className="space-y-2">
@@ -198,8 +227,17 @@ export default function BotControl() {
                 <Label className="text-gray-300 text-sm">Max Entry Price</Label>
                 <span className="text-blue-400 text-sm font-semibold">{maxPrice}¢</span>
               </div>
-              <Slider min={20} max={90} step={5} value={[maxPrice]} onValueChange={([v]) => setMaxPrice(v)} className="w-full" />
-              <p className="text-xs text-gray-500">Maximum contract price to enter (avoid low-payout trades)</p>
+              <Slider min={10} max={45} step={5} value={[maxPrice]} onValueChange={([v]) => setMaxPrice(v)} className="w-full" />
+              <p className="text-xs text-gray-500">Hard-capped at 45¢ — above that, Kalshi's 7% fee erases win profit</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between">
+                <Label className="text-gray-300 text-sm">Max Daily Trades</Label>
+                <span className="text-blue-400 text-sm font-semibold">{maxDailyTrades}</span>
+              </div>
+              <Slider min={1} max={50} step={1} value={[maxDailyTrades]} onValueChange={([v]) => setMaxDailyTrades(v)} className="w-full" />
+              <p className="text-xs text-gray-500">Max positions opened per day — applies to both paper and live mode</p>
             </div>
 
             <div className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
@@ -210,7 +248,19 @@ export default function BotControl() {
                   <p className="text-xs text-gray-500">Simulate trades without real money</p>
                 </div>
               </div>
-              <Switch checked={dryRun} onCheckedChange={setDryRun} />
+              <Switch
+                checked={dryRun}
+                onCheckedChange={(val) => {
+                  setDryRun(val);
+                  paperToggleMutation.mutate({ dryRun: val });
+                  if (isRunning) {
+                    restartMutation.mutate();
+                    toast.info(`Switched to ${val ? "Paper" : "Live"} mode — bot restarting...`);
+                  } else {
+                    toast.info(`Switched to ${val ? "Paper" : "Live"} mode`);
+                  }
+                }}
+              />
             </div>
           </CardContent>
         </Card>

@@ -4,6 +4,7 @@ import { router, protectedProcedure } from "../_core/trpc";
 import * as db from "../db";
 import { botManager } from "../services/botManager";
 import { CITIES } from "../services/nwsService";
+import { getEnsembleForecast } from "../services/openMeteoService";
 
 export const botRouter = router({
   // ─── Status ────────────────────────────────────────────────────────────────
@@ -99,24 +100,63 @@ export const botRouter = router({
     }),
 
   // ─── Trades ────────────────────────────────────────────────────────────────
+  // mode: "paper" | "live" | "all" — if omitted, defaults to bot's current dryRun setting
   getTrades: protectedProcedure
-    .input(z.object({ limit: z.number().default(50), offset: z.number().default(0) }).optional())
+    .input(z.object({ limit: z.number().default(50), offset: z.number().default(0), mode: z.enum(["paper", "live", "all"]).optional() }).optional())
     .query(async ({ ctx, input }) => {
-      return db.getTradesByUser(ctx.user.id, input?.limit ?? 50, input?.offset ?? 0);
+      const config = await db.getBotConfig(ctx.user.id);
+      const isPaper = input?.mode === "all" ? null : input?.mode === "paper" ? true : input?.mode === "live" ? false : (config?.dryRun ?? false);
+      return db.getTradesByUser(ctx.user.id, input?.limit ?? 50, input?.offset ?? 0, isPaper);
     }),
 
-  getTradeStats: protectedProcedure.query(async ({ ctx }) => {
-    return db.getTradeStats(ctx.user.id);
-  }),
+  getTradeStats: protectedProcedure
+    .input(z.object({ mode: z.enum(["paper", "live", "all"]).optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const config = await db.getBotConfig(ctx.user.id);
+      const isPaper = input?.mode === "all" ? null : input?.mode === "paper" ? true : input?.mode === "live" ? false : (config?.dryRun ?? false);
+      return db.getTradeStats(ctx.user.id, isPaper);
+    }),
 
   getDailyPnl: protectedProcedure
-    .input(z.object({ days: z.number().default(14) }).optional())
+    .input(z.object({ days: z.number().default(14), mode: z.enum(["paper", "live", "all"]).optional() }).optional())
     .query(async ({ ctx, input }) => {
-      return db.getDailyPnl(ctx.user.id, input?.days ?? 14);
+      const config = await db.getBotConfig(ctx.user.id);
+      const isPaper = input?.mode === "all" ? null : input?.mode === "paper" ? true : input?.mode === "live" ? false : (config?.dryRun ?? false);
+      return db.getDailyPnl(ctx.user.id, input?.days ?? 14, isPaper);
     }),
 
-  getOpenTrades: protectedProcedure.query(async ({ ctx }) => {
-    return db.getOpenTrades(ctx.user.id);
+  getOpenTrades: protectedProcedure
+    .input(z.object({ mode: z.enum(["paper", "live", "all"]).optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const config = await db.getBotConfig(ctx.user.id);
+      const isPaper = input?.mode === "all" ? null : input?.mode === "paper" ? true : input?.mode === "live" ? false : (config?.dryRun ?? false);
+      return db.getOpenTrades(ctx.user.id, isPaper);
+    }),
+
+  markOldTradesSettled: protectedProcedure
+    .input(z.object({ daysOld: z.number().default(7) }).optional())
+    .mutation(async ({ ctx, input }) => {
+      await db.markOldTradesAsSettled(ctx.user.id, input?.daysOld ?? 7);
+      return { success: true };
+    }),
+
+  // ─── Paper Settlement ───────────────────────────────────────────────────────
+  settlePaperTrades: protectedProcedure.mutation(async ({ ctx }) => {
+    const userId = ctx.user.id;
+    const config = await db.getBotConfig(userId);
+    if (!config?.kalshiApiKey) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Kalshi API key not configured. Go to Settings to add it.",
+      });
+    }
+    const settled = await botManager.settlePaperTradesForUser(userId);
+    await db.insertBotLog({
+      userId,
+      level: "info",
+      message: `Manual paper settlement triggered — ${settled} trade(s) settled`,
+    });
+    return { settled };
   }),
 
   // ─── Logs ──────────────────────────────────────────────────────────────────
@@ -129,6 +169,20 @@ export const botRouter = router({
   // ─── Forecasts ─────────────────────────────────────────────────────────────
   getForecasts: protectedProcedure.query(async () => {
     return db.getLatestForecasts();
+  }),
+
+  // Returns Open-Meteo multi-model ensemble data for all cities (cached 20 min)
+  getEnsembleForecasts: protectedProcedure.query(async () => {
+    const results = await Promise.allSettled(
+      Object.values(CITIES).map(async (city) => {
+        const today = new Date().toLocaleDateString("en-CA", { timeZone: city.timezone });
+        const ensemble = await getEnsembleForecast(city.lat, city.lon, today, city.timezone);
+        return { cityCode: city.code, ensemble };
+      })
+    );
+    return results
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<any>).value);
   }),
 
   getCities: protectedProcedure.query(async () => {

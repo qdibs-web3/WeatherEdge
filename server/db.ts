@@ -5,6 +5,7 @@
  */
 import mysql from "mysql2/promise";
 import { nanoid } from "nanoid";
+import { CITIES } from "./services/nwsService";
 
 /**
  * Create a fresh connection per query to avoid exhausting TiDB Cloud free-tier
@@ -94,9 +95,13 @@ export type Trade = {
   won: boolean | null;
   pnl: string | null;
   feeCents: number | null;
+  strikeDesc: string | null;
   kalshiOrderId: string | null;
   settledAt: Date | null;
   createdAt: Date;
+  isPaper: boolean;
+  evCents: number | null;
+  ourProb: number | null;
 };
 
 export type NewTrade = Omit<Trade, "id" | "createdAt" | "costBasis"> & { costBasis?: string };
@@ -207,6 +212,8 @@ function mapBotConfig(row: any): BotConfig | null {
   } else if (typeof row.enabled_cities === 'string' && row.enabled_cities) {
     try { cities = JSON.parse(row.enabled_cities); } catch {}
   }
+  // Strip any city codes that no longer exist in the CITIES map (e.g. SAN, SJC, JAX)
+  cities = cities.filter((c: string) => c in CITIES);
   return {
     id: row.id,
     userId: row.user_id,
@@ -341,6 +348,10 @@ function mapTrade(row: any): Trade {
     kalshiOrderId: row.order_id ?? null,
     settledAt: row.settled_at ?? null,
     createdAt: row.created_at,
+    strikeDesc: row.strike_desc ?? null,
+    isPaper: row.is_paper == 1 || row.is_paper === true,
+    evCents: row.ev != null ? Number(row.ev) : null,
+    ourProb: row.our_prob != null ? Number(row.our_prob) : null,
   };
 }
 
@@ -361,24 +372,23 @@ function normalizeTradeStatus(status: string | null | undefined): string {
   }
 }
 
-export async function insertTrade(data: NewTrade): Promise<number> {
+export async function insertTrade(data: NewTrade & { isPaper?: boolean }): Promise<number> {
   const costBasis = String((data.priceCents / 100) * data.contracts);
   const status = normalizeTradeStatus(data.status);
   const result = await exec(
-    `INSERT INTO trades_v2 (user_id, order_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.userId, data.kalshiOrderId ?? null, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, status]
+    `INSERT INTO trades_v2 (user_id, order_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status, strike_desc, is_paper, ev, our_prob)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [data.userId, data.kalshiOrderId ?? null, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, status, data.strikeDesc ?? null, data.isPaper ? 1 : 0, data.evCents ?? null, data.ourProb ?? null]
   );
   return result.insertId;
 }
 
-export async function getTradesByUser(userId: number, limit = 50, offset = 0): Promise<Trade[]> {
+export async function getTradesByUser(userId: number, limit = 50, offset = 0, isPaper: boolean | null = false): Promise<Trade[]> {
   const safeLimit = Math.max(1, Math.min(500, Number(limit) || 50));
   const safeOffset = Math.max(0, Number(offset) || 0);
-  const rows = await q(
-    `SELECT * FROM trades_v2 WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit} OFFSET ${safeOffset}`,
-    [userId]
-  );
+  const rows = isPaper === null
+    ? await q(`SELECT * FROM trades_v2 WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit} OFFSET ${safeOffset}`, [userId])
+    : await q(`SELECT * FROM trades_v2 WHERE user_id = ? AND is_paper = ? ORDER BY created_at DESC LIMIT ${safeLimit} OFFSET ${safeOffset}`, [userId, isPaper ? 1 : 0]);
   return rows.map(mapTrade);
 }
 
@@ -387,8 +397,10 @@ export async function getTradeCount(userId: number): Promise<number> {
   return Number(rows[0]?.cnt ?? 0);
 }
 
-export async function getTradeStats(userId: number) {
-  const rows = await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled'", [userId]);
+export async function getTradeStats(userId: number, isPaper: boolean | null = false) {
+  const rows = isPaper === null
+    ? await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled'", [userId])
+    : await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled' AND is_paper = ?", [userId, isPaper ? 1 : 0]);
   const total = rows.length;
   const wins = rows.filter((t) => t.won == 1 || t.won === true).length;
   const totalPnl = rows.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0);
@@ -400,12 +412,11 @@ export async function getTradeStats(userId: number) {
   return { total, wins, losses: total - wins, winRate: total > 0 ? wins / total : 0, totalPnl, roi: totalCost > 0 ? totalPnl / totalCost : 0, avgWin, avgLoss };
 }
 
-export async function getDailyPnl(userId: number, days = 30) {
+export async function getDailyPnl(userId: number, days = 30, isPaper: boolean | null = false) {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = await q(
-    "SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled' AND settled_at >= ? ORDER BY settled_at ASC",
-    [userId, since]
-  );
+  const rows = isPaper === null
+    ? await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled' AND settled_at >= ? ORDER BY settled_at ASC", [userId, since])
+    : await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled' AND is_paper = ? AND settled_at >= ? ORDER BY settled_at ASC", [userId, isPaper ? 1 : 0, since]);
   const byDate: Record<string, { pnl: number; trades: number; wins: number }> = {};
   for (const t of rows) {
     const date = new Date(t.settled_at ?? t.created_at).toISOString().split("T")[0];
@@ -417,12 +428,113 @@ export async function getDailyPnl(userId: number, days = 30) {
   return Object.entries(byDate).map(([date, v]) => ({ date, ...v }));
 }
 
-export async function getOpenTrades(userId: number): Promise<Trade[]> {
-  const rows = await q(
-    "SELECT * FROM trades_v2 WHERE user_id = ? AND status IN ('filled','pending') ORDER BY created_at DESC",
-    [userId]
-  );
+export async function getOpenTrades(userId: number, isPaper: boolean | null = false): Promise<Trade[]> {
+  const rows = isPaper === null
+    ? await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status IN ('filled','pending') ORDER BY created_at DESC", [userId])
+    : await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status IN ('filled','pending') AND is_paper = ? ORDER BY created_at DESC", [userId, isPaper ? 1 : 0]);
   return rows.map(mapTrade);
+}
+
+export async function updateTradeSettlements(userId: number, settlements: any[]): Promise<void> {
+  console.log(`[DB] Updating settlements for user ${userId}, ${settlements.length} settlements`);
+  
+  for (const settlement of settlements) {
+    console.log(`[DB] Processing settlement:`, JSON.stringify(settlement, null, 2));
+    
+    // Update all trades for this market ticker that are still 'filled'
+    const settledTime = settlement.settled_time || settlement.timestamp || new Date().toISOString();
+    const pnl = settlement.revenue - settlement.total_cost;
+    
+    const result = await exec(
+      `UPDATE trades_v2 SET
+        status = 'settled',
+        settled_at = ?,
+        settlement_value = ?
+       WHERE user_id = ? AND market_ticker = ? AND status = 'filled'`,
+      [
+        new Date(settledTime),
+        pnl,
+        userId,
+        settlement.ticker
+      ]
+    );
+
+    console.log(`[DB] Updated ${result.affectedRows} trades for ticker ${settlement.ticker}`);
+  }
+}
+
+/**
+ * Settle open paper trades for a given market ticker.
+ * Called by the paper settlement engine once we know the Kalshi result.
+ *
+ * PnL formula mirrors the live Kalshi fee model (7% on gross winnings):
+ *   WIN:  contracts * (100 - price_cents) * 0.93 / 100  -  contracts * price_cents / 100
+ *   LOSS: -(contracts * price_cents / 100)
+ */
+export async function settlePaperTradesByTicker(
+  userId: number,
+  marketTicker: string,
+  result: "yes" | "no"
+): Promise<number> {
+  // Fetch all open paper trades for this ticker
+  const rows = await q(
+    `SELECT id, side, contracts, price_cents
+       FROM trades_v2
+      WHERE user_id = ? AND market_ticker = ? AND is_paper = 1 AND status = 'filled'`,
+    [userId, marketTicker]
+  );
+
+  if (rows.length === 0) return 0;
+
+  let settled = 0;
+  for (const row of rows) {
+    const side: string = row.side ?? "";
+    const contracts: number = Number(row.contracts ?? 0);
+    const priceCents: number = Number(row.price_cents ?? 0);
+
+    const won = side === result ? 1 : 0;
+    let pnl: number;
+    if (won) {
+      // Net win after 7% Kalshi fee on gross profit
+      const grossProfit = contracts * (100 - priceCents) / 100;
+      const stake       = contracts * priceCents / 100;
+      pnl = grossProfit * 0.93 - stake;
+    } else {
+      pnl = -(contracts * priceCents / 100);
+    }
+
+    await exec(
+      `UPDATE trades_v2
+          SET status = 'settled',
+              won = ?,
+              pnl = ?,
+              settled_at = NOW()
+        WHERE id = ?`,
+      [won, pnl.toFixed(4), row.id]
+    );
+    settled++;
+  }
+
+  console.log(
+    `[DB] Paper-settled ${settled} trade(s) for ${marketTicker} — result: ${result} (user ${userId})`
+  );
+  return settled;
+}
+
+// Manual function to mark old filled trades as settled (for trades that settled days ago)
+export async function markOldTradesAsSettled(userId: number, daysOld: number = 7): Promise<void> {
+  const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+  
+  const result = await exec(
+    `UPDATE trades_v2 SET
+      status = 'settled',
+      settled_at = ?,
+      settlement_value = 0
+     WHERE user_id = ? AND status IN ('filled', 'pending') AND created_at < ?`,
+    [new Date(), userId, cutoffDate]
+  );
+
+  console.log(`[DB] Marked ${result.affectedRows} old trades as settled for user ${userId}`);
 }
 
 // ─── Bot Logs ─────────────────────────────────────────────────────────────────

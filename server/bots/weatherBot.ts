@@ -1,5 +1,6 @@
 import { KalshiClient, KalshiMarket } from "../services/kalshiClient";
 import { NwsService, NwsForecast, CITIES } from "../services/nwsService";
+import { getEnsembleForecast } from "../services/openMeteoService";
 import * as db from "../db";
 import { nanoid } from "nanoid";
 
@@ -45,6 +46,12 @@ const MIN_PRICE_CENTS = 5;
 // If a market closes in < 2 hours, the day's actual high is often already
 // determined and the price reflects near-certainty, not forecast uncertainty.
 const MIN_MINUTES_TO_CLOSE = 120;
+//
+// Hard cap on entry price regardless of user config.
+// Kalshi charges 7% of gross winnings. Break-even price where net win profit = 0:
+//   (100 - p) * 0.93 = p  →  p ≈ 48.2¢
+// Any price above ~45¢ leaves almost no margin after fees. Never trade above this.
+const MAX_PRICE_CENTS_HARD_CAP = 45;
 
 /**
  * Expected value in cents for buying one contract at priceCents.
@@ -171,6 +178,7 @@ export interface BotConfig {
   minLiquidity: number;
   enabledCities: string[];
   dryRun: boolean;
+  maxDailyTrades: number;
 }
 
 // ─── WeatherBot ────────────────────────────────────────────────────────────────
@@ -189,6 +197,8 @@ export class WeatherBot {
 
   // Track open positions to avoid doubling up on same market this session
   private openPositionTickers: Set<string> = new Set();
+  // Track city codes with open positions — one position per city at a time
+  private openPositionCities: Set<string> = new Set();
   // Track daily trades to enforce limits
   private dailyTradeCount = 0;
   private dailyTradeDate = "";
@@ -218,7 +228,7 @@ export class WeatherBot {
   async start() {
     if (this.running) return;
     this.running = true;
-    console.log(`[WeatherBot] Starting for user ${this.config.userId} — time-aware scheduler active`);
+    console.log(`[WeatherBot] Starting for user ${this.config.userId} — time-aware scheduler active${this.config.dryRun ? " | *** PAPER TRADING MODE — no real orders will be placed ***" : " | LIVE TRADING"}`);
     await this.log("info", "Bot started with time-aware NWS window scheduler");
     // Prefetch open positions so we don't double up on session start
     await this.refreshOpenPositions();
@@ -266,19 +276,44 @@ export class WeatherBot {
    * This prevents the bot from re-entering a market it already holds.
    */
   private async refreshOpenPositions(): Promise<void> {
-    try {
-      const result = await this.kalshi.getPositions();
-      this.openPositionTickers.clear();
-      for (const pos of result.market_positions ?? []) {
-        if ((pos.position ?? 0) !== 0) {
-          this.openPositionTickers.add(pos.ticker);
+    this.openPositionTickers.clear();
+    this.openPositionCities.clear();
+
+    if (this.config.dryRun) {
+      try {
+        const openPaperTrades = await db.getOpenTrades(this.config.userId, true);
+        for (const trade of openPaperTrades) {
+          if (trade.marketTicker) this.openPositionTickers.add(trade.marketTicker);
+          if (trade.cityCode) this.openPositionCities.add(trade.cityCode);
         }
+        if (this.openPositionTickers.size > 0) {
+          console.log(`[WeatherBot] [PAPER] ${this.openPositionTickers.size} open paper position(s) across ${this.openPositionCities.size} cities loaded from DB — will skip these`);
+        }
+      } catch (err: any) {
+        console.warn(`[WeatherBot] Could not load open paper positions from DB: ${err.message}`);
       }
-      if (this.openPositionTickers.size > 0) {
-        console.log(`[WeatherBot] ${this.openPositionTickers.size} open position(s) found — will skip these markets`);
+    } else {
+      try {
+        const openDbTrades = await db.getOpenTrades(this.config.userId, false);
+        for (const trade of openDbTrades) {
+          if (trade.marketTicker) this.openPositionTickers.add(trade.marketTicker);
+          if (trade.cityCode) this.openPositionCities.add(trade.cityCode);
+        }
+      } catch (_) {}
+
+      try {
+        const result = await this.kalshi.getPositions();
+        for (const pos of result.market_positions ?? []) {
+          if ((pos.position ?? 0) !== 0) {
+            this.openPositionTickers.add(pos.ticker);
+          }
+        }
+        if (this.openPositionTickers.size > 0) {
+          console.log(`[WeatherBot] ${this.openPositionTickers.size} open position(s) across ${this.openPositionCities.size} cities found — will skip these`);
+        }
+      } catch (err: any) {
+        console.warn(`[WeatherBot] Could not refresh open positions from Kalshi: ${err.message}`);
       }
-    } catch (err: any) {
-      console.warn(`[WeatherBot] Could not refresh open positions: ${err.message}`);
     }
   }
 
@@ -354,22 +389,23 @@ export class WeatherBot {
       signals.sort((a, b) => b.confidence - a.confidence);
       this.lastSignals = signals;
 
+      const modeTag = this.config.dryRun ? "[PAPER]" : "[LIVE]";
       if (signals.length > 0) {
         const top = signals[0];
         console.log(
-          `[WeatherBot] Scan [${windowType}] — ${signals.length} signal(s) | ` +
+          `[WeatherBot] ${modeTag} Scan [${windowType}] — ${signals.length} signal(s) | ` +
           `top: ${top.cityName} ${top.side.toUpperCase()} ${top.strikeDesc} ` +
           `@ ${top.priceCents}¢ | EV: +${top.ev.toFixed(1)}¢ | edge: ${((top.ourProb - top.marketProb) * 100).toFixed(1)}%`
         );
         await this.log(
           "signal",
-          `Scan [${windowType}]: ${signals.length} signal(s) — top: ${top.cityName} ` +
+          `${modeTag} Scan [${windowType}]: ${signals.length} signal(s) — top: ${top.cityName} ` +
           `${top.side.toUpperCase()} ${top.strikeDesc} @ ${top.priceCents}¢ | ` +
           `ourProb: ${(top.ourProb * 100).toFixed(1)}% | mktProb: ${(top.marketProb * 100).toFixed(1)}% | ` +
           `EV: +${top.ev.toFixed(1)}¢ | forecast: ${top.forecastTemp}°F (age: ${top.forecastAgeMinutes}min)`
         );
       } else {
-        console.log(`[WeatherBot] Scan [${windowType}] — no signals above threshold`);
+        console.log(`[WeatherBot] ${modeTag} Scan [${windowType}] — no signals above threshold`);
       }
 
       // 5. Execute signals
@@ -398,15 +434,39 @@ export class WeatherBot {
           console.log(`[WeatherBot] Session spent: $${(spentCents/100).toFixed(2)} of $${(availableBalanceCents/100).toFixed(2)} available`);
         }
       } else if (this.config.dryRun && signals.length > 0) {
-        for (const signal of signals.slice(0, 3)) {
-          await this.log(
-            "signal",
-            `[PAPER] ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc} ` +
-            `@ ${signal.priceCents}¢ x${signal.contracts} | EV: +${signal.ev.toFixed(1)}¢ | ` +
-            `ourProb: ${(signal.ourProb * 100).toFixed(1)}% | mktProb: ${(signal.marketProb * 100).toFixed(1)}% | ` +
-            `forecast: ${signal.forecastTemp}°F (hourly: ${signal.hourlyHighTemp ?? "n/a"}°F) | ` +
-            `forecastAge: ${signal.forecastAgeMinutes}min`
-          );
+        const maxDaily = this.config.maxDailyTrades ?? 20;
+        const maxTrades = inWindow ? 5 : 2;
+        for (const signal of signals.slice(0, maxTrades)) {
+          if (this.dailyTradeCount >= maxDaily) {
+            console.log(`[WeatherBot] [PAPER] Daily trade limit (${maxDaily}) reached — skipping ${signal.ticker}`);
+            break;
+          }
+          await db.insertTrade({
+            userId: this.config.userId,
+            kalshiOrderId: null,
+            marketTicker: signal.ticker,
+            cityCode: signal.cityCode,
+            cityName: signal.cityName,
+            strikeDesc: signal.strikeDesc,
+            side: signal.side,
+            priceCents: signal.priceCents,
+            contracts: signal.contracts,
+            status: "filled",
+            won: null,
+            pnl: null,
+            feeCents: null,
+            settledAt: null,
+            isPaper: true,
+            evCents: signal.ev,
+            ourProb: signal.ourProb,
+          });
+          this.dailyTradeCount++;
+          // Mark ticker as held so we don't re-enter this market in future scans
+          this.openPositionTickers.add(signal.ticker);
+          this.openPositionCities.add(signal.cityCode);
+          const paperMsg = `[PAPER] Trade recorded: ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc} @ ${signal.priceCents}¢ x${signal.contracts} | EV: +${signal.ev.toFixed(1)}¢ | edge: ${((signal.ourProb - signal.marketProb) * 100).toFixed(1)}% | forecast: ${signal.forecastTemp}°F`;
+          console.log(`[WeatherBot] ${paperMsg}`);
+          await this.log("signal", paperMsg);
         }
       }
 
@@ -445,17 +505,53 @@ export class WeatherBot {
       : this.config.minEvCents * 1.5;
 
     // Use hourly high if available (more accurate), else daily period high
-    const forecastTemp = forecast.hourlyHighTemp ?? forecast.highTemp;
+    const nwsTemp = forecast.hourlyHighTemp ?? forecast.highTemp;
 
-    const { markets } = await this.kalshi.getMarkets({
-      series_ticker: city.seriesTicker,
-      status: "open",
-      limit: 20,
-    });
+    // ── Multi-model ensemble (Open-Meteo: ECMWF + GFS + best_match) ──────────
+    // Fetch in parallel with market data; degrade gracefully if unavailable.
+    const [ensembleResult, marketsResult] = await Promise.allSettled([
+      getEnsembleForecast(city.lat, city.lon, forecast.forecastDate, city.timezone),
+      this.kalshi.getMarkets({ series_ticker: city.seriesTicker, status: "open", limit: 20 }),
+    ]);
+
+    const ensemble = ensembleResult.status === "fulfilled" ? ensembleResult.value : null;
+    const markets  = marketsResult.status  === "fulfilled" ? marketsResult.value.markets : [];
+
+    if (marketsResult.status === "rejected") {
+      console.warn(`[WeatherBot] Failed to fetch markets for ${city.code}: ${(marketsResult.reason as any)?.message}`);
+    }
+
+    // Model spread guard: if ECMWF and GFS disagree strongly, skip this city today.
+    // A spread > 6°F means the atmosphere is chaotic and neither model is reliable.
+    if (ensemble && ensemble.modelCount >= 2 && ensemble.spread > 6) {
+      console.log(`[WeatherBot] ${city.code} — ensemble spread ${ensemble.spread}°F > 6°F, models disagree — skipping`);
+      return signals;
+    }
+
+    // Consensus forecast: weighted average of NWS + ensemble models.
+    // If ensemble unavailable, fall back to NWS only.
+    let forecastTemp: number;
+    if (ensemble && ensemble.modelCount >= 2) {
+      // Blend: NWS 40%, ensemble consensus 60%
+      forecastTemp = nwsTemp * 0.40 + ensemble.consensus * 0.60;
+      if (ensemble.spread > 3) {
+        console.log(`[WeatherBot] ${city.code} — NWS ${nwsTemp}°F, ensemble ${ensemble.consensus}°F (spread ${ensemble.spread}°F) — using blend ${forecastTemp.toFixed(1)}°F`);
+      }
+    } else {
+      forecastTemp = nwsTemp;
+    }
+
+    // Apply city-specific directional bias derived from 10,556-market historical analysis.
+    // This corrects for systematic NWS over/under-forecasting per city.
+    const biasedForecast = forecastTemp + city.directionBias;
 
     if (markets.length === 0) {
       console.warn(`[WeatherBot] No open markets found for ${city.code} (series: ${city.seriesTicker})`);
     }
+
+    // Tighten EV threshold when models partially disagree (spread 3–6°F)
+    const spreadPenalty = (ensemble && ensemble.spread > 3) ? 1.3 : 1.0;
+    const effectiveEvThreshold = evThreshold * spreadPenalty;
 
     for (const market of markets) {
       // Skip markets with insufficient liquidity
@@ -486,50 +582,59 @@ export class WeatherBot {
         continue;
       }
 
-      const ourProb = probForStrike(forecastTemp, city.sigma, floor, cap, strikeType);
+      const ourProb = probForStrike(biasedForecast, city.sigma, floor, cap, strikeType);
 
       // Extra guard: don't trade "between" unless we have tight forecast confidence
       // (between markets require precision — only trade if sigma < 3.5 and EV is high)
       if (strikeType === "between" && city.sigma > 3.5 && windowType === "low-freq") continue;
 
+      // Effective max price: user config capped at hard fee-break-even ceiling
+      const effectiveMaxPrice = Math.min(this.config.maxPriceCents, MAX_PRICE_CENTS_HARD_CAP);
+      // Minimum net win profit scales with flat bet size (10% ROI floor)
+      const minWinProfit = this.config.flatBetDollars * 0.10;
+
       // ── YES side ──
       const yesAsk = market.yes_ask;
-      // GUARD: Never trade below MIN_PRICE_CENTS — those are "already decided" markets
-      if (yesAsk >= MIN_PRICE_CENTS && yesAsk <= this.config.maxPriceCents) {
+      if (yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice) {
         const ev = calcEV(ourProb, yesAsk);
-        if (ev >= evThreshold) {
+        if (ev >= effectiveEvThreshold) {
           const marketProb  = yesAsk / 100;
           const contracts   = Math.max(1, Math.floor(this.config.flatBetDollars / (yesAsk / 100)));
-          const confidence  = signalConfidence(ourProb, marketProb, ev, forecast.forecastAgeMinutes);
-          signals.push({
-            cityCode: city.code, cityName: city.name, ticker: market.ticker,
-            side: "yes", priceCents: yesAsk, ourProb, marketProb, ev, confidence,
-            contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
-            strikeDesc: this.strikeDesc(floor, cap, strikeType),
-            strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
-            windowType,
-          });
+          const winProfit   = contracts * ((100 - yesAsk) * (1 - KALSHI_FEE_RATE) - yesAsk) / 100;
+          if (winProfit >= minWinProfit) {
+            const confidence  = signalConfidence(ourProb, marketProb, ev, forecast.forecastAgeMinutes);
+            signals.push({
+              cityCode: city.code, cityName: city.name, ticker: market.ticker,
+              side: "yes", priceCents: yesAsk, ourProb, marketProb, ev, confidence,
+              contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
+              strikeDesc: this.strikeDesc(floor, cap, strikeType),
+              strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
+              windowType,
+            });
+          }
         }
       }
 
       // ── NO side ──
       const noAsk  = market.no_ask;
       const noProb = 1 - ourProb;
-      // GUARD: Never trade below MIN_PRICE_CENTS — those are "already decided" markets
-      if (noAsk >= MIN_PRICE_CENTS && noAsk <= this.config.maxPriceCents) {
+      if (noAsk >= MIN_PRICE_CENTS && noAsk <= effectiveMaxPrice) {
         const ev = calcEV(noProb, noAsk);
-        if (ev >= evThreshold) {
+        if (ev >= effectiveEvThreshold) {
           const marketProb  = noAsk / 100;
           const contracts   = Math.max(1, Math.floor(this.config.flatBetDollars / (noAsk / 100)));
-          const confidence  = signalConfidence(noProb, marketProb, ev, forecast.forecastAgeMinutes);
-          signals.push({
-            cityCode: city.code, cityName: city.name, ticker: market.ticker,
-            side: "no", priceCents: noAsk, ourProb: noProb, marketProb, ev, confidence,
-            contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
-            strikeDesc: this.strikeDesc(floor, cap, strikeType),
-            strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
-            windowType,
-          });
+          const winProfit   = contracts * ((100 - noAsk) * (1 - KALSHI_FEE_RATE) - noAsk) / 100;
+          if (winProfit >= minWinProfit) {
+            const confidence  = signalConfidence(noProb, marketProb, ev, forecast.forecastAgeMinutes);
+            signals.push({
+              cityCode: city.code, cityName: city.name, ticker: market.ticker,
+              side: "no", priceCents: noAsk, ourProb: noProb, marketProb, ev, confidence,
+              contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
+              strikeDesc: this.strikeDesc(floor, cap, strikeType),
+              strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
+              windowType,
+            });
+          }
         }
       }
     }
@@ -590,6 +695,7 @@ export class WeatherBot {
         marketTicker: signal.ticker,
         cityCode: signal.cityCode,
         cityName: signal.cityName,
+        strikeDesc: signal.strikeDesc,
         side: signal.side,
         priceCents: signal.priceCents,
         contracts: signal.contracts,
@@ -598,6 +704,9 @@ export class WeatherBot {
         pnl: null,
         feeCents: null,
         settledAt: null,
+        isPaper: false,
+        evCents: signal.ev,
+        ourProb: signal.ourProb,
       });
 
       const msg =

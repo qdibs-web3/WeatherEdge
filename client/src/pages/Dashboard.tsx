@@ -4,8 +4,28 @@ import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { TrendingUp, TrendingDown, DollarSign, Activity, CloudSun, Bot, BarChart3, ArrowRight, Zap, Target } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, Activity, CloudSun, Bot, BarChart3, ArrowRight, Zap, Target, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
+
+const KALSHI_ACTIVITY_URL = "https://kalshi.com/account/activity";
+
+function strikeFromTicker(ticker: string | null): string {
+  if (!ticker) return "—";
+  const parts = ticker.split("-");
+  if (parts.length < 3) return "—";
+  const strike = parts[parts.length - 1];
+  if (strike.startsWith("T")) return `>${strike.slice(1)}°F`;
+  if (strike.startsWith("B")) return `<${strike.slice(1)}°F`;
+  return strike;
+}
+
+function kalshiMarketUrl(ticker: string, cityName: string) {
+  const parts = ticker?.split("-") ?? [];
+  const series = parts[0]?.toLowerCase() ?? "";
+  const event = parts.length >= 2 ? parts.slice(0, 2).join("-").toLowerCase() : ticker.toLowerCase();
+  const slug = cityName.toLowerCase().replace(/\s+/g, "-") + "-max-daily-temperature";
+  return `https://kalshi.com/markets/${series}/${slug}/${event}`;
+}
 
 function StatCard({ title, value, sub, icon: Icon, color = "blue", trend }: any) {
   return (
@@ -67,7 +87,7 @@ export default function Dashboard() {
           <p className="text-sm text-gray-400">Kalshi Weather Trading — NWS Forecast Edge Strategy</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300 hover:text-white" onClick={() => scanMutation.mutate()} disabled={!status?.running || scanMutation.isPending}>
+          <Button size="sm" className="bg-blue-600 hover:bg-blue-500 text-white" onClick={() => scanMutation.mutate()} disabled={!status?.running || scanMutation.isPending}>
             <Zap className="h-3.5 w-3.5 mr-1.5" /> Scan Now
           </Button>
           {status?.running ? (
@@ -191,7 +211,18 @@ export default function Dashboard() {
                     <div className={`w-2 h-2 rounded-full ${t.won === true ? 'bg-green-400' : t.won === false ? 'bg-red-400' : 'bg-yellow-400'}`} />
                     <div>
                       <p className="text-sm text-white font-medium">{t.cityName}</p>
-                      <p className="text-xs text-gray-500">{t.strikeDesc} · {t.side?.toUpperCase()}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs text-gray-500">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)} · {t.side?.toUpperCase()}</p>
+                        {t.marketTicker && (
+                          <a
+                            href={t.won == null ? kalshiMarketUrl(t.marketTicker, t.cityName) : KALSHI_ACTIVITY_URL}
+                            target="_blank" rel="noopener noreferrer"
+                            className="text-gray-600 hover:text-blue-400 transition-colors"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="text-right">

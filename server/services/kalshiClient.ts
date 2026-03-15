@@ -192,6 +192,7 @@ export class KalshiClient {
   async getPortfolioSettlements(params?: {
     limit?: number;
     cursor?: string;
+    settled_after?: string;
   }): Promise<{ settlements: any[]; cursor?: string }> {
     return this.get("/portfolio/settlements", params);
   }

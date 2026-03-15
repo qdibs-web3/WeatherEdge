@@ -5,21 +5,49 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { TrendingUp, TrendingDown, Search, Filter, Download, RefreshCw } from "lucide-react";
+import { Search, Filter, RefreshCw, ExternalLink } from "lucide-react";
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 const PAGE_SIZE = 20;
+
+const KALSHI_ACTIVITY_URL = "https://kalshi.com/account/activity";
+
+function strikeFromTicker(ticker: string | null): string {
+  if (!ticker) return "—";
+  const parts = ticker.split("-");
+  if (parts.length < 3) return "—";
+  const strike = parts[parts.length - 1];
+  if (strike.startsWith("T")) return `>${strike.slice(1)}°F`;
+  if (strike.startsWith("B")) return `<${strike.slice(1)}°F`;
+  return strike;
+}
+
+function kalshiMarketUrl(ticker: string, cityName: string) {
+  // e.g. KXHIGHTLV-26MAR08-T68 + "Las Vegas"
+  // → https://kalshi.com/markets/kxhightlv/las-vegas-max-daily-temperature/kxhightlv-26mar08
+  const parts = ticker?.split("-") ?? [];
+  const series = parts[0]?.toLowerCase() ?? "";
+  const event = parts.length >= 2 ? parts.slice(0, 2).join("-").toLowerCase() : ticker.toLowerCase();
+  const slug = cityName.toLowerCase().replace(/\s+/g, "-") + "-max-daily-temperature";
+  return `https://kalshi.com/markets/${series}/${slug}/${event}`;
+}
+
+type TradeMode = "paper" | "live" | "all";
 
 export default function Trades() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [openPositionsExpanded, setOpenPositionsExpanded] = useState(true);
+  const [mode, setMode] = useState<TradeMode>("paper");
 
   const { data: trades, isLoading, refetch } = trpc.bot.getTrades.useQuery(
-    { limit: PAGE_SIZE, offset: page * PAGE_SIZE },
+    { limit: PAGE_SIZE, offset: page * PAGE_SIZE, mode },
     { refetchInterval: 15000 }
   );
-  const { data: stats } = trpc.bot.getTradeStats.useQuery(undefined, { refetchInterval: 30000 });
-  const { data: openTrades } = trpc.bot.getOpenTrades.useQuery(undefined, { refetchInterval: 10000 });
+  const { data: stats } = trpc.bot.getTradeStats.useQuery({ mode }, { refetchInterval: 30000 });
+  const { data: openTrades } = trpc.bot.getOpenTrades.useQuery({ mode }, { refetchInterval: 10000 });
+  const { data: dailyPnl } = trpc.bot.getDailyPnl.useQuery({ days: 30, mode }, { refetchInterval: 60000 });
 
   const filtered = (trades ?? []).filter((t: any) => {
     const matchSearch = !search || t.cityName?.toLowerCase().includes(search.toLowerCase()) || t.marketTicker?.toLowerCase().includes(search.toLowerCase());
@@ -28,60 +56,159 @@ export default function Trades() {
   });
 
   const totalPnl = stats?.totalPnl ?? 0;
+  const wins = stats?.wins ?? 0;
+  const losses = stats?.losses ?? 0;
+  const winRate = (stats?.winRate ?? 0) * 100;
+  const openCount = openTrades?.length ?? 0;
+  const totalTrades = stats?.total ?? 0;
+
+  // Build cumulative P&L series for chart
+  const chartData = (dailyPnl ?? []).reduce<{ date: string; cumPnl: number }[]>((acc, d: any) => {
+    const prev = acc.length > 0 ? acc[acc.length - 1].cumPnl : 0;
+    acc.push({ date: d.date.slice(5), cumPnl: parseFloat((prev + d.pnl).toFixed(2)) });
+    return acc;
+  }, []);
+  const chartPositive = chartData.length === 0 || chartData[chartData.length - 1]?.cumPnl >= 0;
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Trade History</h1>
-          <p className="text-sm text-gray-400">All Kalshi weather market trades</p>
+          <p className="text-sm text-gray-400">Kalshi weather market trades</p>
         </div>
-        <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300 hover:text-white" onClick={() => refetch()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Paper / Live / All toggle */}
+          <div className="flex rounded-md border border-[#27272a] overflow-hidden">
+            {(["paper", "live", "all"] as TradeMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); setPage(0); }}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors capitalize ${
+                  mode === m
+                    ? m === "paper" ? "bg-purple-500/20 text-purple-300" : m === "live" ? "bg-green-500/20 text-green-300" : "bg-blue-500/20 text-blue-300"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300 hover:text-white" onClick={() => refetch()}>
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
+          </Button>
+        </div>
       </div>
 
-      {/* Summary Stats */}
+      {/* Summary Stats — 4 boxes */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: "Total Trades", value: (trades ?? []).length > 0 ? (trades ?? []).length : (stats?.total ?? 0), color: "text-white" },
-          { label: "Win Rate", value: `${((stats?.winRate ?? 0) * 100).toFixed(1)}%`, color: "text-blue-400" },
-          { label: "Total P&L", value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? "text-green-400" : "text-red-400" },
-          { label: "Open Positions", value: openTrades?.length ?? 0, color: "text-yellow-400" },
-        ].map(({ label, value, color }) => (
-          <Card key={label} className="bg-[#18181b] border-[#27272a]">
-            <CardContent className="p-4">
-              <p className="text-xs text-gray-500">{label}</p>
-              <p className={`text-xl font-bold ${color}`}>{value}</p>
-            </CardContent>
-          </Card>
-        ))}
+        {/* Win Rate with W/L ratio */}
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-4">
+            <p className="text-xs text-gray-500">Win Rate</p>
+            <p className="text-xl font-bold text-blue-400">{winRate.toFixed(1)}%</p>
+            <p className="text-xs text-gray-500 mt-0.5">{wins}W / {losses}L</p>
+          </CardContent>
+        </Card>
+
+        {/* Total P&L */}
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-4">
+            <p className="text-xs text-gray-500">Total P&L</p>
+            <p className={`text-xl font-bold ${totalPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+              {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Trades + Open combined */}
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-4">
+            <p className="text-xs text-gray-500">Trades</p>
+            <p className="text-xl font-bold text-white">{totalTrades}</p>
+            <p className="text-xs text-yellow-400 mt-0.5">{openCount} open</p>
+          </CardContent>
+        </Card>
+
+        {/* Cumulative P&L Sparkline */}
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-4">
+            <p className="text-xs text-gray-500 mb-1">P&L Curve</p>
+            {chartData.length > 1 ? (
+              <ResponsiveContainer width="100%" height={52}>
+                <AreaChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={chartPositive ? "#22c55e" : "#ef4444"} stopOpacity={0.3} />
+                      <stop offset="95%" stopColor={chartPositive ? "#22c55e" : "#ef4444"} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area
+                    type="monotone"
+                    dataKey="cumPnl"
+                    stroke={chartPositive ? "#22c55e" : "#ef4444"}
+                    strokeWidth={1.5}
+                    fill="url(#pnlGrad)"
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#18181b", border: "1px solid #27272a", borderRadius: 6, fontSize: 11 }}
+                    labelStyle={{ color: "#9ca3af" }}
+                    formatter={(v: any) => [`$${Number(v).toFixed(2)}`, "P&L"]}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-xs text-gray-600 pt-2">No data yet</p>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Open Positions */}
       {openTrades && openTrades.length > 0 && (
         <Card className="bg-[#18181b] border-[#27272a] border-yellow-500/20">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold text-yellow-400 flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" /> Open Positions ({openTrades.length})
+          <CardHeader className="pb-3 cursor-pointer" onClick={() => setOpenPositionsExpanded(e => !e)}>
+            <CardTitle className="text-sm font-semibold text-yellow-400 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" /> Open Positions ({openTrades.length})
+              </div>
+              <span className="text-gray-500 text-xs font-normal">{openPositionsExpanded ? "▲ collapse" : "▼ expand"}</span>
             </CardTitle>
           </CardHeader>
+          {openPositionsExpanded && (
           <CardContent>
             <div className="space-y-2">
-              {openTrades.map((t: any) => (
+              {openTrades.map((t: any) => {
+                const stake = parseFloat(t.costBasis ?? 0);
+                // Payout if wins: net of 7% Kalshi fee on gross profit
+                const winPayout = t.contracts * (100 - t.priceCents) * 0.93 / 100;
+                const netProfit = winPayout - stake;
+                return (
                 <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
                   <div>
-                    <p className="text-sm font-medium text-white">{t.cityName}</p>
-                    <p className="text-xs text-gray-400">{t.strikeDesc} · {t.side?.toUpperCase()} · {t.contracts} contracts @ {t.priceCents}¢</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-medium text-white">{t.cityName}</p>
+                      {t.marketTicker && (
+                        <a href={kalshiMarketUrl(t.marketTicker, t.cityName)} target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-blue-400 transition-colors">
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)} · {t.side?.toUpperCase()} · {t.contracts} × {t.priceCents}¢</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm text-white font-medium">${parseFloat(t.costBasis ?? 0).toFixed(2)}</p>
-                    <p className="text-xs text-gray-500">{new Date(t.createdAt).toLocaleString()}</p>
+                    <p className="text-sm text-white font-medium">Stake ${stake.toFixed(2)}</p>
+                    <p className="text-xs text-green-400">Win +${netProfit.toFixed(2)} <span className="text-gray-600">/ Lose -${stake.toFixed(2)}</span></p>
+                    <p className="text-xs text-gray-600">{new Date(t.createdAt).toLocaleString()}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
+          )}
         </Card>
       )}
 
@@ -129,7 +256,23 @@ export default function Trades() {
                     return (
                       <tr key={t.id} className="border-b border-[#27272a] hover:bg-[#27272a]/50 transition-colors">
                         <td className="px-4 py-3 text-white font-medium">{t.cityName}</td>
-                        <td className="px-4 py-3 text-gray-400 font-mono text-xs">{t.marketTicker}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <div>
+                              <p className="text-sm text-gray-300">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)}</p>
+                              <p className="text-xs text-gray-600 font-mono">{t.marketTicker}</p>
+                            </div>
+                            {t.marketTicker && (
+                              <a
+                                href={t.won == null ? kalshiMarketUrl(t.marketTicker, t.cityName) : KALSHI_ACTIVITY_URL}
+                                target="_blank" rel="noopener noreferrer"
+                                className="text-gray-600 hover:text-blue-400 transition-colors"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-4 py-3">
                           <Badge variant="outline" className={t.side === 'yes' ? 'border-green-500/40 text-green-400' : 'border-red-500/40 text-red-400'}>
                             {t.side?.toUpperCase()}
@@ -142,13 +285,18 @@ export default function Trades() {
                           {t.pnl != null ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
                         </td>
                         <td className="px-4 py-3">
-                          {t.won === true ? (
-                            <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Won</Badge>
-                          ) : t.won === false ? (
-                            <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Lost</Badge>
-                          ) : (
-                            <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">Open</Badge>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            {t.won === true ? (
+                              <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Won</Badge>
+                            ) : t.won === false ? (
+                              <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Lost</Badge>
+                            ) : (
+                              <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">Open</Badge>
+                            )}
+                            {t.isPaper && (
+                              <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">Paper</Badge>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-gray-500 text-xs">{new Date(t.createdAt).toLocaleDateString()}</td>
                       </tr>

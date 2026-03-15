@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   CloudSun, RefreshCw, Thermometer, TrendingUp, AlertCircle,
-  CheckCircle2, Wind, Droplets, ArrowUp, ArrowDown, Activity
+  CheckCircle2, Wind, Droplets, ArrowDown, Activity
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -13,9 +13,24 @@ export default function Forecasts() {
     undefined,
     { refetchInterval: 300_000 }
   );
-  const { data: signals } = trpc.bot.getLatestSignals.useQuery(undefined, { refetchInterval: 60_000 });
+  const { data: ensembleData } = trpc.bot.getEnsembleForecasts.useQuery(
+    undefined,
+    { refetchInterval: 300_000 }
+  );
+  const { data: botStatus } = trpc.bot.getStatus.useQuery(undefined, { refetchInterval: 30_000 });
+  const { data: botConfig } = trpc.config.getBotConfig.useQuery();
 
-  const signalMap = new Map((signals ?? []).map((s: any) => [s.cityCode, s]));
+  // Build a map of cityCode → ensemble for quick lookup
+  const ensembleMap = new Map<string, any>(
+    (ensembleData ?? []).map((e: any) => [e.cityCode, e.ensemble])
+  );
+
+  const flatBet = (botConfig as any)?.flatBetDollars ?? 20;
+  const KALSHI_FEE_RATE = 0.07;
+
+  // Use live in-memory signals from bot status (has ev, contracts, ourProb)
+  const lastSignals: any[] = (botStatus as any)?.lastSignals ?? [];
+  const signalMap = new Map(lastSignals.map((s: any) => [s.cityCode, s]));
 
   // Wind direction abbreviation → arrow character
   const windArrow: Record<string, string> = {
@@ -30,7 +45,7 @@ export default function Forecasts() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Live Forecasts</h1>
-          <p className="text-sm text-gray-400">NWS forecast data for all active cities — updates every 5 minutes</p>
+          <p className="text-sm text-gray-400">NWS + 3-model ensemble (Best/ICON/GEM) for all cities — updates every 5 minutes</p>
         </div>
         <Button
           variant="outline"
@@ -78,6 +93,11 @@ export default function Forecasts() {
             const sigma = f.sigma != null ? Number(f.sigma).toFixed(1) : null;
             const windDir = f.windDirection ?? "";
             const windArrowChar = windArrow[windDir] ?? "";
+            const ensemble = ensembleMap.get(f.cityCode);
+            const spreadOk   = !ensemble || ensemble.spread <= 3;
+            const spreadWarn = ensemble && ensemble.spread > 3 && ensemble.spread <= 6;
+            const spreadBad  = ensemble && ensemble.spread > 6;
+            const todayLabel = new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 
             return (
               <Card
@@ -142,45 +162,92 @@ export default function Forecasts() {
                     <p className="text-xs text-gray-400 leading-relaxed">{f.shortForecast}</p>
                   )}
 
-                  {/* Model stats row */}
+                  {/* Date + sigma row */}
                   <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-[#27272a] rounded-md px-2.5 py-1.5">
+                      <p className="text-xs text-gray-500">Forecast Date</p>
+                      <p className="text-xs font-medium text-gray-300">{todayLabel}</p>
+                    </div>
                     <div className="bg-[#27272a] rounded-md px-2.5 py-1.5">
                       <p className="text-xs text-gray-500">Model σ</p>
                       <p className="text-xs font-medium text-gray-300">{sigma ? `±${sigma}°F` : "—"}</p>
                     </div>
-                    <div className="bg-[#27272a] rounded-md px-2.5 py-1.5">
-                      <p className="text-xs text-gray-500">Shift Freq</p>
-                      <p className="text-xs font-medium text-gray-300">
-                        {f.shiftFreq != null ? `${Math.round(Number(f.shiftFreq) * 100)}%` : "—"}
-                      </p>
-                    </div>
                   </div>
 
-                  {/* Active signal box */}
-                  {hasSignal && signal && (
-                    <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-2.5 space-y-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <Activity className="h-3 w-3 text-blue-400" />
-                        <p className="text-xs font-medium text-blue-300">Active Signal</p>
+                  {/* Multi-model ensemble block */}
+                  {ensemble ? (
+                    <div className={`rounded-md px-2.5 py-2 space-y-1.5 border ${
+                      spreadBad  ? "bg-red-500/5 border-red-500/20" :
+                      spreadWarn ? "bg-yellow-500/5 border-yellow-500/20" :
+                                   "bg-emerald-500/5 border-emerald-500/20"
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-medium text-gray-400">3-Model Ensemble</p>
+                        <span className={`text-xs font-semibold ${
+                          spreadBad ? "text-red-400" : spreadWarn ? "text-yellow-400" : "text-emerald-400"
+                        }`}>
+                          {spreadBad ? "⚠ Disagree" : spreadWarn ? "~ Partial" : "✓ Agree"} ±{ensemble.spread}°F
+                        </span>
                       </div>
-                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                        <span className="text-gray-500">Market</span>
-                        <span className="text-gray-300 font-mono truncate text-right">{signal.marketTicker}</span>
-                        <span className="text-gray-500">Side</span>
-                        <span className={`text-right font-semibold ${signal.side === "yes" ? "text-green-400" : "text-red-400"}`}>
-                          {signal.side?.toUpperCase()}
-                        </span>
-                        <span className="text-gray-500">EV Edge</span>
-                        <span className="text-blue-300 font-semibold text-right">
-                          +{signal.evCents != null ? Number(signal.evCents).toFixed(1) : "0.0"}¢
-                        </span>
-                        <span className="text-gray-500">Total Profit</span>
-                        <span className="text-green-400 font-semibold text-right">
-                          {signal.totalExpectedProfit != null ? `+$${Number(signal.totalExpectedProfit).toFixed(2)}` : "—"}
-                        </span>
+                      <div className="grid grid-cols-3 gap-1 text-xs">
+                        <div className="text-center">
+                          <p className="text-gray-500">Best</p>
+                          <p className="text-gray-200 font-medium">{ensemble.bestMatch != null ? `${Math.round(ensemble.bestMatch)}°` : "—"}</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-gray-500">ICON</p>
+                          <p className="text-gray-200 font-medium">{ensemble.icon != null ? `${Math.round(ensemble.icon)}°` : "—"}</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-gray-500">GEM</p>
+                          <p className="text-gray-200 font-medium">{ensemble.gem != null ? `${Math.round(ensemble.gem)}°` : "—"}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between pt-0.5 border-t border-white/5">
+                        <p className="text-xs text-gray-500">Consensus</p>
+                        <p className="text-xs font-semibold text-white">{ensemble.consensus}°F</p>
                       </div>
                     </div>
+                  ) : (
+                    <div className="bg-[#27272a] rounded-md px-2.5 py-1.5 text-xs text-gray-500">
+                      Ensemble loading...
+                    </div>
                   )}
+
+                  {/* Active signal box */}
+                  {hasSignal && signal && (() => {
+                    const ev: number = signal.ev ?? 0;
+                    const contracts: number = signal.contracts ?? Math.floor(flatBet / (signal.priceCents / 100));
+                    const costBasis = (contracts * signal.priceCents) / 100;
+                    // Net profit if we win, net loss if we lose — expected value across all contracts
+                    const grossWinPerContract = 100 - signal.priceCents;
+                    const netWinPerContract = grossWinPerContract * (1 - KALSHI_FEE_RATE);
+                    const totalExpectedProfit = (signal.ourProb * netWinPerContract - (1 - signal.ourProb) * signal.priceCents) * contracts / 100;
+                    return (
+                      <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-2.5 space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <Activity className="h-3 w-3 text-blue-400" />
+                          <p className="text-xs font-medium text-blue-300">Active Signal</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                          <span className="text-gray-500">Market</span>
+                          <span className="text-gray-300 font-mono truncate text-right">{signal.ticker}</span>
+                          <span className="text-gray-500">Side</span>
+                          <span className={`text-right font-semibold ${signal.side === "yes" ? "text-green-400" : "text-red-400"}`}>
+                            {signal.side?.toUpperCase()}
+                          </span>
+                          <span className="text-gray-500">Entry</span>
+                          <span className="text-gray-300 text-right">{contracts} × {signal.priceCents}¢ = ${costBasis.toFixed(2)}</span>
+                          <span className="text-gray-500">EV / contract</span>
+                          <span className="text-blue-300 font-semibold text-right">+{ev.toFixed(1)}¢</span>
+                          <span className="text-gray-500">Expected Profit</span>
+                          <span className={`font-semibold text-right ${totalExpectedProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {totalExpectedProfit >= 0 ? "+" : ""}${totalExpectedProfit.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Updated timestamp */}
                   <div className="flex items-center gap-1.5 text-xs text-gray-600">
