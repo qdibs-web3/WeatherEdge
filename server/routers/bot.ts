@@ -159,6 +159,14 @@ export const botRouter = router({
     return { settled };
   }),
 
+  // ─── Recalculate P&L ────────────────────────────────────────────────────────
+  recalculatePnl: protectedProcedure.mutation(async ({ ctx }) => {
+    const userId = ctx.user.id;
+    const count = await db.recalculatePaperTradePnl(userId);
+    await db.insertBotLog({ userId, level: "info", message: `P&L recalculated for ${count} settled paper trade(s)` });
+    return { count };
+  }),
+
   // ─── Logs ──────────────────────────────────────────────────────────────────
   getLogs: protectedProcedure
     .input(z.object({ limit: z.number().default(100) }).optional())
@@ -204,5 +212,104 @@ export const botRouter = router({
   // ─── Latest Signals ────────────────────────────────────────────────────────
   getLatestSignals: protectedProcedure.query(async ({ ctx }) => {
     return db.getLatestSignals(ctx.user.id);
+  }),
+
+  // ─── Backtest Summary ──────────────────────────────────────────────────────
+  // Analyzes all settled paper trades to show win rate breakdown by price, side,
+  // probability bucket, and strike type. Used to validate new strategy improvements.
+  getBacktestSummary: protectedProcedure.query(async ({ ctx }) => {
+    const trades = await db.getTradesByUser(ctx.user.id, 1000, 0, true);
+    const settled = trades.filter((t) => t.status === "settled" && t.won !== null);
+    if (settled.length === 0) return null;
+
+    type Bucket = { trades: number; wins: number; pnl: number };
+    const mkBucket = (): Bucket => ({ trades: 0, wins: 0, pnl: 0 });
+    const addTo = (b: Bucket, won: boolean, pnl: number) => {
+      b.trades++; if (won) b.wins++; b.pnl += pnl;
+    };
+    const toStats = (map: Record<string, Bucket>) =>
+      Object.entries(map).map(([label, v]) => ({
+        label, trades: v.trades, wins: v.wins,
+        winRate: v.trades > 0 ? +(v.wins / v.trades * 100).toFixed(1) : 0,
+        pnl: +v.pnl.toFixed(2),
+      }));
+
+    const byPrice: Record<string, Bucket> = {
+      "5-20¢ (longshot)": mkBucket(),
+      "21-45¢ (mid)":     mkBucket(),
+      "46-80¢ (fav)":     mkBucket(),
+    };
+    const bySide: Record<string, Bucket>  = { yes: mkBucket(), no: mkBucket() };
+    const byProb: Record<string, Bucket>  = {
+      "<40% (low conviction)":   mkBucket(),
+      "40-55% (borderline)":     mkBucket(),
+      "55-70% (conviction)":     mkBucket(),
+      "70%+ (high conviction)":  mkBucket(),
+    };
+    const byStrike: Record<string, Bucket> = {
+      greater: mkBucket(), less: mkBucket(), between: mkBucket(),
+    };
+
+    for (const t of settled) {
+      const price = t.priceCents ?? 0;
+      const prob  = t.ourProb   ?? 0;
+      const pnl   = parseFloat(String(t.pnl ?? 0));
+      const won   = t.won === true;
+
+      const pKey = price <= 20 ? "5-20¢ (longshot)" : price <= 45 ? "21-45¢ (mid)" : "46-80¢ (fav)";
+      addTo(byPrice[pKey], won, pnl);
+
+      const sKey = (t.side ?? "yes") as string;
+      if (bySide[sKey]) addTo(bySide[sKey], won, pnl);
+
+      const probKey = prob < 0.40 ? "<40% (low conviction)" : prob < 0.55 ? "40-55% (borderline)" : prob < 0.70 ? "55-70% (conviction)" : "70%+ (high conviction)";
+      addTo(byProb[probKey], won, pnl);
+
+      const strikeKey = (t.strikeDesc ?? "").startsWith(">") ? "greater" : (t.strikeDesc ?? "").startsWith("<") ? "less" : "between";
+      if (byStrike[strikeKey]) addTo(byStrike[strikeKey], won, pnl);
+    }
+
+    // ── V2 simulation: what would win rate be if we only took high-conviction trades?
+    // Filters to ourProb ≥ 0.60 (proxy for new strategy's 0.70 conviction + 0.12 edge,
+    // since old trades used tight sigma which inflated ourProb by ~0.10 vs sigmaMkt).
+    const v2Trades = settled.filter((t) => (t.ourProb ?? 0) >= 0.60);
+    const v2Wins   = v2Trades.filter((t) => t.won === true).length;
+    const v2Pnl    = v2Trades.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0);
+
+    // ── Projected EV: how much profit per $1 risked at current win rates by bucket
+    const evProjection = toStats(byProb).map((b) => {
+      // Avg entry price for this bucket (rough: use overall avg)
+      const avgPrice = settled.reduce((s, t) => s + (t.priceCents ?? 0), 0) / (settled.length || 1);
+      const winRate  = b.winRate / 100;
+      const evPerContract = winRate * (100 - avgPrice) * 0.93 - (1 - winRate) * avgPrice;
+      return { ...b, evPerContract: +evPerContract.toFixed(2) };
+    });
+
+    return {
+      totalTrades:    settled.length,
+      totalWins:      settled.filter((t) => t.won).length,
+      totalPnl:       +settled.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0).toFixed(2),
+      overallWinRate: +(settled.filter((t) => t.won).length / settled.length * 100).toFixed(1),
+      byPrice:        toStats(byPrice),
+      bySide:         toStats(bySide),
+      byProb:         evProjection,
+      byStrike:       toStats(byStrike),
+      v2Simulation: {
+        trades:  v2Trades.length,
+        wins:    v2Wins,
+        winRate: v2Trades.length > 0 ? +(v2Wins / v2Trades.length * 100).toFixed(1) : 0,
+        pnl:     +v2Pnl.toFixed(2),
+        skipped: settled.length - v2Trades.length,
+        note:    "Trades where stored ourProb ≥ 0.60 (proxy for new 70% conviction + 12% edge filter)",
+      },
+    };
+  }),
+
+  // ─── Clear Paper Trades ────────────────────────────────────────────────────
+  clearPaperTrades: protectedProcedure.mutation(async ({ ctx }) => {
+    const userId = ctx.user.id;
+    await db.deletePaperTrades(userId);
+    await db.insertBotLog({ userId, level: "info", message: "All paper trades cleared by user" });
+    return { success: true };
   }),
 });

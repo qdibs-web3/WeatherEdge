@@ -45,9 +45,15 @@ export default function Trades() {
     { limit: PAGE_SIZE, offset: page * PAGE_SIZE, mode },
     { refetchInterval: 15000 }
   );
-  const { data: stats } = trpc.bot.getTradeStats.useQuery({ mode }, { refetchInterval: 30000 });
+  const { data: stats, refetch: refetchStats } = trpc.bot.getTradeStats.useQuery({ mode }, { refetchInterval: 30000 });
   const { data: openTrades } = trpc.bot.getOpenTrades.useQuery({ mode }, { refetchInterval: 10000 });
-  const { data: dailyPnl } = trpc.bot.getDailyPnl.useQuery({ days: 30, mode }, { refetchInterval: 60000 });
+  const { data: dailyPnl, refetch: refetchDailyPnl } = trpc.bot.getDailyPnl.useQuery({ days: 30, mode }, { refetchInterval: 60000 });
+  const recalcMutation = trpc.bot.recalculatePnl.useMutation({
+    onSuccess: (data) => {
+      refetch(); refetchStats(); refetchDailyPnl();
+      alert(`P&L recalculated for ${data.count} trades.`);
+    },
+  });
 
   const filtered = (trades ?? []).filter((t: any) => {
     const matchSearch = !search || t.cityName?.toLowerCase().includes(search.toLowerCase()) || t.marketTicker?.toLowerCase().includes(search.toLowerCase());
@@ -96,6 +102,9 @@ export default function Trades() {
           </div>
           <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300 hover:text-white" onClick={() => refetch()}>
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
+          </Button>
+          <Button variant="outline" size="sm" className="border-purple-500/40 text-purple-300 hover:text-purple-200" onClick={() => recalcMutation.mutate()} disabled={recalcMutation.isPending}>
+            {recalcMutation.isPending ? "Recalculating…" : "Recalc P&L"}
           </Button>
         </div>
       </div>
@@ -182,9 +191,8 @@ export default function Trades() {
             <div className="space-y-2">
               {openTrades.map((t: any) => {
                 const stake = parseFloat(t.costBasis ?? 0);
-                // Payout if wins: net of 7% Kalshi fee on gross profit
-                const winPayout = t.contracts * (100 - t.priceCents) * 0.93 / 100;
-                const netProfit = winPayout - stake;
+                // Net profit if YES wins: (gross win per contract) × (1 - 7% fee) × contracts
+                const netProfit = t.contracts * (100 - t.priceCents) * 0.93 / 100;
                 return (
                 <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
                   <div>

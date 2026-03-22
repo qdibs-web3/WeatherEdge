@@ -10,15 +10,24 @@ import { CITIES } from "./services/nwsService";
 /**
  * Create a fresh connection per query to avoid exhausting TiDB Cloud free-tier
  * connection limits (max 5). Connections are opened and immediately closed after
- * each query, so no idle connections are held.
+ * each query, so no idle connections are held. Retries up to 3 times with
+ * exponential backoff to handle transient ETIMEDOUT errors from TiDB Cloud.
  */
-async function getConn(): Promise<mysql.Connection> {
-  return mysql.createConnection({
-    uri: process.env.DATABASE_URL!,
-    ssl: { rejectUnauthorized: false },
-    connectTimeout: 10000,
-    timezone: "Z",
-  });
+async function getConn(attempt = 0): Promise<mysql.Connection> {
+  try {
+    return await mysql.createConnection({
+      uri: process.env.DATABASE_URL!,
+      ssl: { rejectUnauthorized: false },
+      connectTimeout: 20000,
+      timezone: "Z",
+    });
+  } catch (err: any) {
+    if (attempt < 3 && (err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED")) {
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+      return getConn(attempt + 1);
+    }
+    throw err;
+  }
 }
 
 async function q(sql: string, params: any[] = []): Promise<any[]> {
@@ -495,10 +504,11 @@ export async function settlePaperTradesByTicker(
     const won = side === result ? 1 : 0;
     let pnl: number;
     if (won) {
-      // Net win after 7% Kalshi fee on gross profit
+      // Net profit after 7% Kalshi fee on gross profit.
+      // grossProfit * 0.93 IS the net profit — stake is returned separately by Kalshi.
+      // Do NOT subtract stake here (that was a double-deduction bug).
       const grossProfit = contracts * (100 - priceCents) / 100;
-      const stake       = contracts * priceCents / 100;
-      pnl = grossProfit * 0.93 - stake;
+      pnl = grossProfit * 0.93;
     } else {
       pnl = -(contracts * priceCents / 100);
     }
@@ -535,6 +545,26 @@ export async function markOldTradesAsSettled(userId: number, daysOld: number = 7
   );
 
   console.log(`[DB] Marked ${result.affectedRows} old trades as settled for user ${userId}`);
+}
+
+export async function recalculatePaperTradePnl(userId: number): Promise<number> {
+  const result = await exec(
+    `UPDATE trades_v2
+        SET pnl = CASE
+          WHEN won = 1 THEN (contracts * (100 - price_cents) * 0.93 / 100)
+          WHEN won = 0 THEN -(contracts * price_cents / 100)
+          ELSE pnl
+        END
+      WHERE user_id = ? AND is_paper = 1 AND status = 'settled' AND won IS NOT NULL`,
+    [userId]
+  );
+  console.log(`[DB] Recalculated P&L for ${result.affectedRows} paper trade(s) (user ${userId})`);
+  return result.affectedRows ?? 0;
+}
+
+export async function deletePaperTrades(userId: number): Promise<number> {
+  const result = await exec(`DELETE FROM trades_v2 WHERE user_id = ? AND is_paper = 1`, [userId]);
+  return result.affectedRows ?? 0;
 }
 
 // ─── Bot Logs ─────────────────────────────────────────────────────────────────

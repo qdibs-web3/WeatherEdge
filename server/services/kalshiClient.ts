@@ -144,7 +144,26 @@ export class KalshiClient {
     limit?: number;
     cursor?: string;
   }): Promise<{ markets: KalshiMarket[]; cursor?: string }> {
-    return this.get("/markets", params);
+    const raw = await this.get<{ markets: any[]; cursor?: string }>("/markets", params);
+    const markets: KalshiMarket[] = (raw.markets ?? []).map((m: any) => ({
+      ticker:         m.ticker,
+      series_ticker:  m.series_ticker ?? m.event_ticker,
+      title:          m.title,
+      status:         m.status,
+      // Kalshi API returns prices as dollar strings (e.g. "0.0300") — convert to cents
+      yes_ask:  Math.round(parseFloat(m.yes_ask_dollars ?? "0") * 100),
+      yes_bid:  Math.round(parseFloat(m.yes_bid_dollars ?? "0") * 100),
+      no_ask:   Math.round(parseFloat(m.no_ask_dollars  ?? "0") * 100),
+      no_bid:   Math.round(parseFloat(m.no_bid_dollars  ?? "0") * 100),
+      last_price:    Math.round(parseFloat(m.last_price_dollars ?? "0") * 100),
+      volume:        parseFloat(m.volume_fp ?? m.volume_24h_fp ?? "0"),
+      open_interest: parseFloat(m.open_interest_fp ?? "0"),
+      close_time:    m.close_time,
+      floor_strike:  m.floor_strike,
+      cap_strike:    m.cap_strike,
+      strike_type:   m.strike_type,
+    }));
+    return { markets, cursor: raw.cursor };
   }
 
   async getMarket(ticker: string): Promise<KalshiMarket> {

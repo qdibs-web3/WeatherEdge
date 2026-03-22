@@ -43,15 +43,33 @@ const KALSHI_FEE_RATE = 0.07;
 const MIN_PRICE_CENTS = 5;
 //
 // NEVER trade a market closing within this many minutes.
-// If a market closes in < 2 hours, the day's actual high is often already
-// determined and the price reflects near-certainty, not forecast uncertainty.
-const MIN_MINUTES_TO_CLOSE = 120;
+const MIN_MINUTES_TO_CLOSE = 60;
 //
-// Hard cap on entry price regardless of user config.
-// Kalshi charges 7% of gross winnings. Break-even price where net win profit = 0:
-//   (100 - p) * 0.93 = p  →  p ≈ 48.2¢
-// Any price above ~45¢ leaves almost no margin after fees. Never trade above this.
-const MAX_PRICE_CENTS_HARD_CAP = 45;
+// Hard cap on entry price. Raised to 80¢ to allow buying high-probability contracts.
+// The original 45¢ cap forced the bot to only buy low-probability (cheap) contracts,
+// which in a trending temperature regime (e.g. cold March) means always betting wrong.
+// EV at 80¢ with 90% win probability: 0.9 * 20 * 0.93 - 0.1 * 80 = +8.7¢ — solidly profitable.
+const MAX_PRICE_CENTS_HARD_CAP = 80;
+//
+// Minimum win probability required to place any trade.
+// Set to 0.70 to target 80-90% actual win rate. At this threshold combined
+// with the regime filter and minimum edge, the bot only enters markets where
+// the model has strong conviction aligned with the temperature trend.
+const MIN_CONVICTION = 0.70;
+//
+// Minimum model edge over market-implied probability.
+// ourProb must exceed (marketPrice / 100) by at least this amount.
+// NOTE: With sigmaMkt calibrated to market-implied volatility, our model naturally
+// agrees with the market within 2-5%. Real alpha (NWS updates, ensemble, directionBias)
+// produces 2-6% edge. 3% captures real signals without requiring large mispricings.
+const MIN_EDGE = 0.03;
+//
+// Locked EV threshold — not user-editable to prevent under-filtering.
+// 6¢ minimum EV per contract after Kalshi 7% fee factored in.
+const MIN_EV_CENTS_LOCKED = 6;
+//
+// Minimum open interest — 200 balances liquidity quality with market availability.
+const MIN_LIQUIDITY_LOCKED = 200;
 
 /**
  * Expected value in cents for buying one contract at priceCents.
@@ -195,10 +213,8 @@ export class WeatherBot {
   private lastSignals: TradeSignal[] = [];
   private currentMode: "high-freq" | "low-freq" | "idle" = "idle";
 
-  // Track open positions to avoid doubling up on same market this session
+  // Track open positions to avoid doubling up on the same exact contract
   private openPositionTickers: Set<string> = new Set();
-  // Track city codes with open positions — one position per city at a time
-  private openPositionCities: Set<string> = new Set();
   // Track daily trades to enforce limits
   private dailyTradeCount = 0;
   private dailyTradeDate = "";
@@ -277,17 +293,15 @@ export class WeatherBot {
    */
   private async refreshOpenPositions(): Promise<void> {
     this.openPositionTickers.clear();
-    this.openPositionCities.clear();
 
     if (this.config.dryRun) {
       try {
         const openPaperTrades = await db.getOpenTrades(this.config.userId, true);
         for (const trade of openPaperTrades) {
           if (trade.marketTicker) this.openPositionTickers.add(trade.marketTicker);
-          if (trade.cityCode) this.openPositionCities.add(trade.cityCode);
         }
         if (this.openPositionTickers.size > 0) {
-          console.log(`[WeatherBot] [PAPER] ${this.openPositionTickers.size} open paper position(s) across ${this.openPositionCities.size} cities loaded from DB — will skip these`);
+          console.log(`[WeatherBot] [PAPER] ${this.openPositionTickers.size} open paper position(s) loaded from DB — will skip these`);
         }
       } catch (err: any) {
         console.warn(`[WeatherBot] Could not load open paper positions from DB: ${err.message}`);
@@ -297,7 +311,6 @@ export class WeatherBot {
         const openDbTrades = await db.getOpenTrades(this.config.userId, false);
         for (const trade of openDbTrades) {
           if (trade.marketTicker) this.openPositionTickers.add(trade.marketTicker);
-          if (trade.cityCode) this.openPositionCities.add(trade.cityCode);
         }
       } catch (_) {}
 
@@ -309,7 +322,7 @@ export class WeatherBot {
           }
         }
         if (this.openPositionTickers.size > 0) {
-          console.log(`[WeatherBot] ${this.openPositionTickers.size} open position(s) across ${this.openPositionCities.size} cities found — will skip these`);
+          console.log(`[WeatherBot] ${this.openPositionTickers.size} open position(s) found — will skip these`);
         }
       } catch (err: any) {
         console.warn(`[WeatherBot] Could not refresh open positions from Kalshi: ${err.message}`);
@@ -406,6 +419,7 @@ export class WeatherBot {
         );
       } else {
         console.log(`[WeatherBot] ${modeTag} Scan [${windowType}] — no signals above threshold`);
+        await this.log("info", `${modeTag} Scan [${windowType}] — no signals above threshold`);
       }
 
       // 5. Execute signals
@@ -463,7 +477,6 @@ export class WeatherBot {
           this.dailyTradeCount++;
           // Mark ticker as held so we don't re-enter this market in future scans
           this.openPositionTickers.add(signal.ticker);
-          this.openPositionCities.add(signal.cityCode);
           const paperMsg = `[PAPER] Trade recorded: ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc} @ ${signal.priceCents}¢ x${signal.contracts} | EV: +${signal.ev.toFixed(1)}¢ | edge: ${((signal.ourProb - signal.marketProb) * 100).toFixed(1)}% | forecast: ${signal.forecastTemp}°F`;
           console.log(`[WeatherBot] ${paperMsg}`);
           await this.log("signal", paperMsg);
@@ -499,10 +512,8 @@ export class WeatherBot {
   ): Promise<TradeSignal[]> {
     const signals: TradeSignal[] = [];
 
-    // Higher EV bar in low-freq mode — only the very best setups
-    const evThreshold = windowType === "high-freq"
-      ? this.config.minEvCents
-      : this.config.minEvCents * 1.5;
+    // Locked EV bar — not user-configurable to prevent under-filtering.
+    const evThreshold = MIN_EV_CENTS_LOCKED;
 
     // Use hourly high if available (more accurate), else daily period high
     const nwsTemp = forecast.hourlyHighTemp ?? forecast.highTemp;
@@ -525,6 +536,7 @@ export class WeatherBot {
     // A spread > 6°F means the atmosphere is chaotic and neither model is reliable.
     if (ensemble && ensemble.modelCount >= 2 && ensemble.spread > 6) {
       console.log(`[WeatherBot] ${city.code} — ensemble spread ${ensemble.spread}°F > 6°F, models disagree — skipping`);
+      await this.log("warning", `${city.name} — ensemble spread ${ensemble.spread.toFixed(1)}°F > 6°F, models disagree — skipping city this scan`);
       return signals;
     }
 
@@ -546,95 +558,131 @@ export class WeatherBot {
     const biasedForecast = forecastTemp + city.directionBias;
 
     if (markets.length === 0) {
-      console.warn(`[WeatherBot] No open markets found for ${city.code} (series: ${city.seriesTicker})`);
+      console.warn(`[WeatherBot] ${city.code} — no open markets found (series: ${city.seriesTicker})`);
+      return signals;
     }
 
-    // Tighten EV threshold when models partially disagree (spread 3–6°F)
-    const spreadPenalty = (ensemble && ensemble.spread > 3) ? 1.3 : 1.0;
-    const effectiveEvThreshold = evThreshold * spreadPenalty;
+    // Temperature regime: compute ONCE per city (not per market)
+    const currentMonth = new Date().getMonth();
+    const monthlyNormal = city.monthlyNormals[currentMonth];
+    const regimeDelta = biasedForecast - monthlyNormal;
+    const regime: "cold" | "warm" | "neutral" =
+      regimeDelta < -8 ? "cold" :
+      regimeDelta >  8 ? "warm" : "neutral";
+
+    if (regime !== "neutral") {
+      console.log(`[WeatherBot] ${city.code} — ${regime.toUpperCase()} regime | ${biasedForecast.toFixed(1)}°F vs ${monthlyNormal}°F normal (Δ${regimeDelta > 0 ? "+" : ""}${regimeDelta.toFixed(1)}°F)`);
+      await this.log("info", `${city.name} — ${regime.toUpperCase()} regime | forecast ${biasedForecast.toFixed(1)}°F vs ${monthlyNormal}°F normal (Δ${regimeDelta > 0 ? "+" : ""}${regimeDelta.toFixed(1)}°F) — only ${regime}-side bets allowed`);
+    }
+
+    // No spread penalty — the >6°F spread guard above already handles strong disagreement.
+    const effectiveEvThreshold = evThreshold;
+
+    // Use locked hard cap and min win profit floor
+    const effectiveMaxPrice = MAX_PRICE_CENTS_HARD_CAP;
+    const minWinProfit = this.config.flatBetDollars * 0.10;
+
+    console.log(`[WeatherBot] ${city.code} — ${markets.length} markets | forecast ${biasedForecast.toFixed(1)}°F (bias ${city.directionBias > 0 ? "+" : ""}${city.directionBias}°F) | regime: ${regime}`);
 
     for (const market of markets) {
-      // Skip markets with insufficient liquidity
-      if ((market.open_interest ?? 0) < this.config.minLiquidity) continue;
+      const floor      = market.floor_strike ?? null;
+      const cap        = market.cap_strike ?? null;
+      const strikeType = market.strike_type ?? "between";
+      const strikeLabel = this.strikeDesc(floor, cap, strikeType);
+      const oi  = market.open_interest ?? 0;
+      const vol = market.volume ?? 0;
+      const liquidity = oi > 0 ? oi : vol; // prefer OI, fall back to volume
 
-      // ── GUARD: Skip markets closing too soon ──────────────────────────────
-      // If a market closes in < 2 hours, the day's high is likely already known
-      // and the price is "settled by reality" — not a forecast edge opportunity.
+      if (!["greater", "less", "between"].includes(strikeType)) continue;
+
+      // ── Pre-probability guards (log rejections for diagnostics) ──
+      // Only skip on liquidity when data is actually populated (> 0).
+      // Kalshi returns open_interest: 0 for many fresh daily markets.
+      if (liquidity > 0 && liquidity < MIN_LIQUIDITY_LOCKED) {
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: low liquidity ${liquidity} < ${MIN_LIQUIDITY_LOCKED}`);
+        continue;
+      }
       const minsLeft = minutesToClose(market);
       if (minsLeft < MIN_MINUTES_TO_CLOSE) {
-        console.log(`[WeatherBot] Skipping ${market.ticker} — closes in ${minsLeft.toFixed(0)} min (< ${MIN_MINUTES_TO_CLOSE})`);
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: closes in ${minsLeft.toFixed(0)}min`);
         continue;
       }
-
-      // Skip markets we already hold a position in
       if (this.openPositionTickers.has(market.ticker)) {
-        console.log(`[WeatherBot] Skipping ${market.ticker} — already have open position`);
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: already held`);
         continue;
       }
+      if (strikeType === "between" && city.sigmaMkt > 5.0 && windowType === "low-freq") continue;
 
-      const floor     = market.floor_strike ?? null;
-      const cap       = market.cap_strike ?? null;
-      const strikeType = market.strike_type ?? "between";
-
-      // Log unexpected strike types so we can catch API changes
-      if (!["greater", "less", "between"].includes(strikeType)) {
-        console.warn(`[WeatherBot] Unexpected strike_type "${strikeType}" on ${market.ticker} — skipping`);
-        continue;
-      }
-
-      const ourProb = probForStrike(biasedForecast, city.sigma, floor, cap, strikeType);
-
-      // Extra guard: don't trade "between" unless we have tight forecast confidence
-      // (between markets require precision — only trade if sigma < 3.5 and EV is high)
-      if (strikeType === "between" && city.sigma > 3.5 && windowType === "low-freq") continue;
-
-      // Effective max price: user config capped at hard fee-break-even ceiling
-      const effectiveMaxPrice = Math.min(this.config.maxPriceCents, MAX_PRICE_CENTS_HARD_CAP);
-      // Minimum net win profit scales with flat bet size (10% ROI floor)
-      const minWinProfit = this.config.flatBetDollars * 0.10;
+      const ourProb = probForStrike(biasedForecast, city.sigmaMkt, floor, cap, strikeType);
 
       // ── YES side ──
-      const yesAsk = market.yes_ask;
-      if (yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice) {
-        const ev = calcEV(ourProb, yesAsk);
-        if (ev >= effectiveEvThreshold) {
-          const marketProb  = yesAsk / 100;
-          const contracts   = Math.max(1, Math.floor(this.config.flatBetDollars / (yesAsk / 100)));
-          const winProfit   = contracts * ((100 - yesAsk) * (1 - KALSHI_FEE_RATE) - yesAsk) / 100;
-          if (winProfit >= minWinProfit) {
-            const confidence  = signalConfidence(ourProb, marketProb, ev, forecast.forecastAgeMinutes);
-            signals.push({
-              cityCode: city.code, cityName: city.name, ticker: market.ticker,
-              side: "yes", priceCents: yesAsk, ourProb, marketProb, ev, confidence,
-              contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
-              strikeDesc: this.strikeDesc(floor, cap, strikeType),
-              strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
-              windowType,
-            });
-          }
+      const yesAsk        = market.yes_ask;
+      const yesIsWarmBet  = strikeType === "greater";
+      const yesRegimeOk   = !(regime === "cold" && yesIsWarmBet) && !(regime === "warm" && !yesIsWarmBet && strikeType === "less");
+      const yesMarketProb = yesAsk / 100;
+      const yesEdge       = ourProb - yesMarketProb;
+      const yesEV         = calcEV(ourProb, yesAsk);
+
+      {
+        const reasons: string[] = [];
+        if (ourProb < MIN_CONVICTION)          reasons.push(`conv ${(ourProb*100).toFixed(0)}%<${(MIN_CONVICTION*100).toFixed(0)}%`);
+        if (yesEdge < MIN_EDGE)                reasons.push(`edge ${(yesEdge*100).toFixed(1)}%<${(MIN_EDGE*100).toFixed(0)}%`);
+        if (!yesRegimeOk)                      reasons.push(`regime(${regime})`);
+        if (yesAsk < MIN_PRICE_CENTS)          reasons.push(`price ${yesAsk}¢<min`);
+        if (yesAsk > effectiveMaxPrice)        reasons.push(`price ${yesAsk}¢>cap`);
+        if (reasons.length === 0 && yesEV < effectiveEvThreshold) reasons.push(`EV ${yesEV.toFixed(1)}¢<${effectiveEvThreshold}¢`);
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} YES@${yesAsk}¢ | ourP=${(ourProb*100).toFixed(0)}% mktP=${(yesMarketProb*100).toFixed(0)}% edge=${(yesEdge*100).toFixed(1)}% EV=${yesEV.toFixed(1)}¢${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
+      }
+
+      if (ourProb >= MIN_CONVICTION && yesEdge >= MIN_EDGE && yesRegimeOk && yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice && yesEV >= effectiveEvThreshold) {
+        const confScale  = Math.min(1.5, Math.max(0.5, (ourProb - 0.50) / 0.25));
+        const contracts  = Math.max(1, Math.floor((this.config.flatBetDollars * confScale) / (yesAsk / 100)));
+        const winProfit  = contracts * (100 - yesAsk) * (1 - KALSHI_FEE_RATE) / 100;
+        if (winProfit >= minWinProfit) {
+          const confidence = signalConfidence(ourProb, yesMarketProb, yesEV, forecast.forecastAgeMinutes);
+          signals.push({
+            cityCode: city.code, cityName: city.name, ticker: market.ticker,
+            side: "yes", priceCents: yesAsk, ourProb, marketProb: yesMarketProb, ev: yesEV, confidence,
+            contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
+            strikeDesc: strikeLabel, strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
+            windowType,
+          });
         }
       }
 
       // ── NO side ──
-      const noAsk  = market.no_ask;
-      const noProb = 1 - ourProb;
-      if (noAsk >= MIN_PRICE_CENTS && noAsk <= effectiveMaxPrice) {
-        const ev = calcEV(noProb, noAsk);
-        if (ev >= effectiveEvThreshold) {
-          const marketProb  = noAsk / 100;
-          const contracts   = Math.max(1, Math.floor(this.config.flatBetDollars / (noAsk / 100)));
-          const winProfit   = contracts * ((100 - noAsk) * (1 - KALSHI_FEE_RATE) - noAsk) / 100;
-          if (winProfit >= minWinProfit) {
-            const confidence  = signalConfidence(noProb, marketProb, ev, forecast.forecastAgeMinutes);
-            signals.push({
-              cityCode: city.code, cityName: city.name, ticker: market.ticker,
-              side: "no", priceCents: noAsk, ourProb: noProb, marketProb, ev, confidence,
-              contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
-              strikeDesc: this.strikeDesc(floor, cap, strikeType),
-              strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
-              windowType,
-            });
-          }
+      const noAsk        = market.no_ask;
+      const noProb       = 1 - ourProb;
+      const noMarketProb = noAsk / 100;
+      const noIsWarmBet  = strikeType === "less";
+      const noRegimeOk   = !(regime === "cold" && noIsWarmBet) && !(regime === "warm" && !noIsWarmBet && strikeType === "greater");
+      const noEdge       = noProb - noMarketProb;
+      const noEV         = calcEV(noProb, noAsk);
+
+      {
+        const reasons: string[] = [];
+        if (noProb < MIN_CONVICTION)           reasons.push(`conv ${(noProb*100).toFixed(0)}%<${(MIN_CONVICTION*100).toFixed(0)}%`);
+        if (noEdge < MIN_EDGE)                 reasons.push(`edge ${(noEdge*100).toFixed(1)}%<${(MIN_EDGE*100).toFixed(0)}%`);
+        if (!noRegimeOk)                       reasons.push(`regime(${regime})`);
+        if (noAsk < MIN_PRICE_CENTS)           reasons.push(`price ${noAsk}¢<min`);
+        if (noAsk > effectiveMaxPrice)         reasons.push(`price ${noAsk}¢>cap`);
+        if (reasons.length === 0 && noEV < effectiveEvThreshold) reasons.push(`EV ${noEV.toFixed(1)}¢<${effectiveEvThreshold}¢`);
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel}  NO@${noAsk}¢ | ourP=${(noProb*100).toFixed(0)}% mktP=${(noMarketProb*100).toFixed(0)}% edge=${(noEdge*100).toFixed(1)}% EV=${noEV.toFixed(1)}¢${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
+      }
+
+      if (noProb >= MIN_CONVICTION && noEdge >= MIN_EDGE && noRegimeOk && noAsk >= MIN_PRICE_CENTS && noAsk <= effectiveMaxPrice && noEV >= effectiveEvThreshold) {
+        const confScale  = Math.min(1.5, Math.max(0.5, (noProb - 0.50) / 0.25));
+        const contracts  = Math.max(1, Math.floor((this.config.flatBetDollars * confScale) / (noAsk / 100)));
+        const winProfit  = contracts * (100 - noAsk) * (1 - KALSHI_FEE_RATE) / 100;
+        if (winProfit >= minWinProfit) {
+          const confidence = signalConfidence(noProb, noMarketProb, noEV, forecast.forecastAgeMinutes);
+          signals.push({
+            cityCode: city.code, cityName: city.name, ticker: market.ticker,
+            side: "no", priceCents: noAsk, ourProb: noProb, marketProb: noMarketProb, ev: noEV, confidence,
+            contracts, forecastTemp, hourlyHighTemp: forecast.hourlyHighTemp,
+            strikeDesc: strikeLabel, strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
+            windowType,
+          });
         }
       }
     }

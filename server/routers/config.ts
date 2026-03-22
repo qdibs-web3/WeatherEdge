@@ -71,8 +71,8 @@ export const configRouter = router({
     .input(
       z.object({
         flatBetDollars: z.number().min(1).max(10000).optional(),
-        minEvCents: z.number().min(2).max(25).optional(),
-        maxPriceCents: z.number().min(10).max(45).optional(),
+        // minEvCents intentionally removed — locked at 6¢ in weatherBot.ts (MIN_EV_CENTS_LOCKED)
+        // maxPriceCents intentionally removed — locked at 80¢ in weatherBot.ts (MAX_PRICE_CENTS_HARD_CAP)
         dryRun: z.boolean().optional(),
         enabledCities: z.array(z.string()).optional(),
         maxDailyTrades: z.number().min(1).max(500).optional(),
