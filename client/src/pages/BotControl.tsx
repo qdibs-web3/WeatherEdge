@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
-import { Bot, Play, Square, Zap, RefreshCw, Target, Shield, MapPin, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck } from "lucide-react";
+import { Bot, Play, Square, Zap, RefreshCw, Target, Shield, MapPin, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, FlaskConical } from "lucide-react";
 
 const ALL_CITIES = [
   { code: "NYC", name: "New York City" },   { code: "LAX", name: "Los Angeles" },
@@ -27,6 +27,7 @@ export default function BotControl() {
   const { data: config } = trpc.config.getBotConfig.useQuery();
   const { data: openPaperTrades } = trpc.bot.getOpenTrades.useQuery({ mode: "paper" }, { refetchInterval: 10000 });
   const { data: backtest } = trpc.bot.getBacktestSummary.useQuery(undefined, { staleTime: 60_000 });
+  const { data: paramSim } = trpc.bot.getParamSimulation.useQuery(undefined, { staleTime: 60_000 });
   const utils = trpc.useContext();
 
   const [flatBet, setFlatBet] = useState<number>(20);
@@ -114,7 +115,7 @@ export default function BotControl() {
   const isRunning = status?.running ?? false;
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="p-6 space-y-6 max-w-[70%] mx-auto">
       <div>
         <h1 className="text-xl font-bold text-white">Bot Control</h1>
         <p className="text-sm text-gray-400">Manage, configure, and monitor your weather trading bot</p>
@@ -245,11 +246,11 @@ export default function BotControl() {
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Min EV / contract</p>
-                  <p className="text-white font-semibold">8¢ hi-freq only</p>
+                  <p className="text-white font-semibold">10¢</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Max Entry Price</p>
-                  <p className="text-white font-semibold">80¢</p>
+                  <p className="text-white font-semibold">55¢</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Min Conviction</p>
@@ -257,18 +258,18 @@ export default function BotControl() {
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Min Model Edge</p>
-                  <p className="text-white font-semibold">+12% over market</p>
+                  <p className="text-white font-semibold">+5% over market</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Min Liquidity</p>
-                  <p className="text-white font-semibold">500 open interest</p>
+                  <p className="text-white font-semibold">100 open interest</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Regime Filter</p>
-                  <p className="text-white font-semibold">±4°F vs 30yr normal</p>
+                  <p className="text-white font-semibold">±8°F vs 30yr normal</p>
                 </div>
               </div>
-              <p className="text-xs text-gray-500">Tuned for 80-90% win rate target. All fees (7% Kalshi) are factored into EV.</p>
+              <p className="text-xs text-gray-500">Tuned for profitability at 59-65% win rate. Price cap (55¢) ensures positive EV even without model calibration improvement. All Kalshi fees (7%) factored in.</p>
             </div>
 
             <div className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
@@ -447,6 +448,60 @@ export default function BotControl() {
                 </p>
               </div>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Param Simulator */}
+      {paramSim && paramSim.length > 0 && paramSim.some((s: any) => s.trades > 0) && (
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+              <FlaskConical className="h-4 w-4 text-violet-400" /> Param Simulator — Retroactive Test
+            </CardTitle>
+            <CardDescription>
+              How each parameter combo would have performed against your {(paramSim[0]?.trades ?? 0) + (paramSim[0]?.skipped ?? 0)} settled trades.
+              Use this to pick the next config before changing anything live.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[#27272a]">
+                    {["Scenario", "Trades", "Wins", "Losses", "Win Rate", "P&L", "Skipped"].map(h => (
+                      <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {paramSim.map((s: any, i: number) => (
+                    <tr key={s.label} className={`border-b border-[#27272a] ${i === 0 ? "opacity-50" : "hover:bg-[#27272a]/50"}`}>
+                      <td className="px-3 py-2.5 text-white font-medium">
+                        {s.label}
+                        {i === 0 && <span className="ml-2 text-[10px] text-gray-500">(current)</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-gray-400">{s.trades}</td>
+                      <td className="px-3 py-2.5 text-green-400">{s.wins}</td>
+                      <td className="px-3 py-2.5 text-red-400">{s.losses}</td>
+                      <td className="px-3 py-2.5">
+                        <span className={`font-semibold ${s.winRate >= 60 ? "text-green-400" : s.winRate >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                          {s.winRate}%
+                        </span>
+                      </td>
+                      <td className={`px-3 py-2.5 font-semibold ${s.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        {s.pnl >= 0 ? "+" : ""}${s.pnl.toFixed(2)}
+                      </td>
+                      <td className="px-3 py-2.5 text-gray-500">{s.skipped}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-gray-600 mt-3">
+              "Skipped" = trades that would not have been placed under that scenario's filters. Lower skipped = more trades found.
+              Aim for the scenario with positive P&L and a skipped count that still leaves enough trades per day.
+            </p>
           </CardContent>
         </Card>
       )}

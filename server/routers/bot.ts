@@ -185,7 +185,13 @@ export const botRouter = router({
       Object.values(CITIES).map(async (city) => {
         const today = new Date().toLocaleDateString("en-CA", { timeZone: city.timezone });
         const ensemble = await getEnsembleForecast(city.lat, city.lon, today, city.timezone);
-        return { cityCode: city.code, ensemble };
+        return {
+          cityCode: city.code,
+          ensemble,
+          date: today,
+          directionBias: city.directionBias,
+          sigma: city.sigma,
+        };
       })
     );
     return results
@@ -200,6 +206,35 @@ export const botRouter = router({
   // ─── City Stats ────────────────────────────────────────────────────────────
   getCityStats: protectedProcedure.query(async ({ ctx }) => {
     return db.getCityStats(ctx.user.id);
+  }),
+
+  // ─── Price Bucket Stats ────────────────────────────────────────────────────
+  getPriceBucketStats: protectedProcedure.query(async ({ ctx }) => {
+    const trades = await db.getTradesByUser(ctx.user.id, 1000, 0, null);
+    const settled = trades.filter((t) => t.status === "settled" && t.won !== null);
+    type Bucket = { trades: number; wins: number; losses: number; pnl: number };
+    const buckets: Record<string, Bucket> = {
+      "5–20¢":  { trades: 0, wins: 0, losses: 0, pnl: 0 },
+      "21–45¢": { trades: 0, wins: 0, losses: 0, pnl: 0 },
+      "46–80¢": { trades: 0, wins: 0, losses: 0, pnl: 0 },
+    };
+    for (const t of settled) {
+      const price = t.priceCents ?? 0;
+      const pnl   = parseFloat(String(t.pnl ?? 0));
+      const won   = t.won === true;
+      const key   = price <= 20 ? "5–20¢" : price <= 45 ? "21–45¢" : "46–80¢";
+      buckets[key].trades++;
+      buckets[key].pnl += pnl;
+      if (won) buckets[key].wins++; else buckets[key].losses++;
+    }
+    return Object.entries(buckets).map(([label, v]) => ({
+      label,
+      trades: v.trades,
+      wins: v.wins,
+      losses: v.losses,
+      winRate: v.trades > 0 ? +(v.wins / v.trades * 100).toFixed(1) : 0,
+      pnl: +v.pnl.toFixed(2),
+    }));
   }),
 
   // ─── Activity Log ─────────────────────────────────────────────────────────
@@ -303,6 +338,41 @@ export const botRouter = router({
         note:    "Trades where stored ourProb ≥ 0.60 (proxy for new 70% conviction + 12% edge filter)",
       },
     };
+  }),
+
+  // ─── Param Simulation ──────────────────────────────────────────────────────
+  // Retroactively tests different max-price / min-conviction combos against
+  // all settled trades already in the DB. Answers: "would these params have
+  // been profitable, and would they have found enough trades?"
+  getParamSimulation: protectedProcedure.query(async ({ ctx }) => {
+    const trades = await db.getTradesByUser(ctx.user.id, 1000, 0, null);
+    const settled = trades.filter((t) => t.status === "settled" && t.won !== null && t.pnl != null);
+
+    const scenarios = [
+      { label: "Old (80¢ cap, 70% conv)",          maxPrice: 80, minConv: 0.70 },
+      { label: "Conservative (45¢ cap, 70% conv)", maxPrice: 45, minConv: 0.70 },
+      { label: "New (55¢ cap, 70% conv) ★",        maxPrice: 55, minConv: 0.70 },
+      { label: "Aggressive (55¢ cap, 75% conv)",   maxPrice: 55, minConv: 0.75 },
+    ];
+
+    return scenarios.map(({ label, maxPrice, minConv }) => {
+      const subset = settled.filter(
+        (t) => (t.priceCents ?? 0) <= maxPrice && (t.ourProb ?? 0) >= minConv
+      );
+      const wins   = subset.filter((t) => t.won === true).length;
+      const pnl    = subset.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0);
+      return {
+        label,
+        maxPrice,
+        minConv: +(minConv * 100).toFixed(0),
+        trades:  subset.length,
+        wins,
+        losses:  subset.length - wins,
+        winRate: subset.length > 0 ? +(wins / subset.length * 100).toFixed(1) : 0,
+        pnl:     +pnl.toFixed(2),
+        skipped: settled.length - subset.length,
+      };
+    });
   }),
 
   // ─── Clear Paper Trades ────────────────────────────────────────────────────

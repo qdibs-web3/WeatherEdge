@@ -72,6 +72,8 @@ export interface NwsForecast {
   fetchedAt: string;
   hourlyHighTemp: number | null;  // High derived from hourly data — more precise than daily period
   forecastAgeMinutes: number;     // How old is the NWS forecast (freshness indicator)
+  tomorrowHighTemp: number | null;    // NWS forecast high for next calendar day (city local time)
+  tomorrowForecastDate: string;       // Tomorrow's date YYYY-MM-DD in city timezone
 }
 
 // ─── In-memory cache ────────────────────────────────────────────────────────────
@@ -118,7 +120,7 @@ export class NwsService {
       if (!urls) {
         const pointRes = await axios.get(
           `${NWS_BASE}/points/${city.lat},${city.lon}`,
-          { headers: { "User-Agent": this.userAgent }, timeout: 8000 }
+          { headers: { "User-Agent": this.userAgent }, timeout: 15000 }
         );
         const props = pointRes.data?.properties;
         const forecastUrl = props?.forecast;
@@ -130,9 +132,9 @@ export class NwsService {
 
       // Step 2: Fetch daily forecast
       const [forecastRes, hourlyRes] = await Promise.allSettled([
-        axios.get(urls.forecast, { headers: { "User-Agent": this.userAgent }, timeout: 8000 }),
+        axios.get(urls.forecast, { headers: { "User-Agent": this.userAgent }, timeout: 15000 }),
         urls.hourly
-          ? axios.get(urls.hourly, { headers: { "User-Agent": this.userAgent }, timeout: 8000 })
+          ? axios.get(urls.hourly, { headers: { "User-Agent": this.userAgent }, timeout: 15000 })
           : Promise.reject("no hourly url"),
       ]);
 
@@ -170,22 +172,35 @@ export class NwsService {
           : Math.round(nightPeriod.temperature * 9 / 5 + 32)
         : highTemp - 15;
 
-      // ── Step 3: Extract hourly high for today (more precise) ──
+      // ── Step 3: Extract hourly high for today and tomorrow (more precise) ──
       let hourlyHighTemp: number | null = null;
+      let tomorrowHourlyHighTemp: number | null = null;
       if (hourlyRes.status === "fulfilled") {
         const hourlyPeriods: any[] = hourlyRes.value.data?.properties?.periods ?? [];
-        // Get all hourly temps for today in local time
         const todayHourlyTemps = hourlyPeriods
           .filter((p: any) => p.startTime.split("T")[0] === todayStr)
           .map((p: any) =>
-            p.temperatureUnit === "F"
-              ? p.temperature
-              : Math.round(p.temperature * 9 / 5 + 32)
+            p.temperatureUnit === "F" ? p.temperature : Math.round(p.temperature * 9 / 5 + 32)
           );
-        if (todayHourlyTemps.length > 0) {
-          hourlyHighTemp = Math.max(...todayHourlyTemps);
-        }
+        if (todayHourlyTemps.length > 0) hourlyHighTemp = Math.max(...todayHourlyTemps);
+
+        const tomorrowHourlyTemps = hourlyPeriods
+          .filter((p: any) => p.startTime.split("T")[0] === tomorrowStr)
+          .map((p: any) =>
+            p.temperatureUnit === "F" ? p.temperature : Math.round(p.temperature * 9 / 5 + 32)
+          );
+        if (tomorrowHourlyTemps.length > 0) tomorrowHourlyHighTemp = Math.max(...tomorrowHourlyTemps);
       }
+
+      // Tomorrow's daily period high (fallback when hourly not yet available for tomorrow)
+      const tomorrowDayPeriod = periods.find(
+        (p: any) => p.isDaytime && p.startTime.split("T")[0] === tomorrowStr
+      );
+      const tomorrowDailyHigh = tomorrowDayPeriod
+        ? (tomorrowDayPeriod.temperatureUnit === "F"
+            ? tomorrowDayPeriod.temperature
+            : Math.round(tomorrowDayPeriod.temperature * 9 / 5 + 32))
+        : null;
 
       // ── Extract precip chance from day period ──
       const precipChance: number | null = dayPeriod.probabilityOfPrecipitation?.value ?? null;
@@ -211,6 +226,8 @@ export class NwsService {
         fetchedAt: new Date().toISOString(),
         hourlyHighTemp,
         forecastAgeMinutes,
+        tomorrowHighTemp: tomorrowHourlyHighTemp ?? tomorrowDailyHigh,
+        tomorrowForecastDate: tomorrowStr,
       };
 
       forecastCache.set(cityCode, { data: forecast, expiresAt: Date.now() + CACHE_TTL_MS });

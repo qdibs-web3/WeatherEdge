@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Filter, RefreshCw, ExternalLink } from "lucide-react";
+import { Search, Filter, RefreshCw, ExternalLink, Sparkles } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 const PAGE_SIZE = 20;
@@ -66,7 +66,18 @@ export default function Trades() {
   const losses = stats?.losses ?? 0;
   const winRate = (stats?.winRate ?? 0) * 100;
   const openCount = openTrades?.length ?? 0;
-  const totalTrades = stats?.total ?? 0;
+  const settledTrades = stats?.total ?? 0;
+  const totalTrades = settledTrades + openCount;
+
+  const allTimePotentialReturn = stats?.totalPotentialReturn ?? 0;
+  const allTimeWagered = stats?.totalWagered ?? 0;
+  const allTimePotentialProfit = allTimePotentialReturn - allTimeWagered;
+
+  const openStake = (openTrades ?? []).reduce((sum: number, t: any) => sum + parseFloat(t.costBasis ?? 0), 0);
+  const openPotentialProfit = (openTrades ?? []).reduce((sum: number, t: any) => {
+    return sum + (Number(t.contracts) * (100 - Number(t.priceCents)) * 0.93) / 100;
+  }, 0);
+  const openPotentialPayout = openStake + openPotentialProfit;
 
   // Build cumulative P&L series for chart
   const chartData = (dailyPnl ?? []).reduce<{ date: string; cumPnl: number }[]>((acc, d: any) => {
@@ -77,7 +88,7 @@ export default function Trades() {
   const chartPositive = chartData.length === 0 || chartData[chartData.length - 1]?.cumPnl >= 0;
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="p-6 space-y-6 max-w-[70%] mx-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Trade History</h1>
@@ -109,33 +120,106 @@ export default function Trades() {
         </div>
       </div>
 
-      {/* Summary Stats — 4 boxes */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {/* Win Rate with W/L ratio */}
+      {/* Summary Stats — 6 boxes */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        {/* Win Rate */}
         <Card className="bg-[#18181b] border-[#27272a]">
-          <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Win Rate</p>
-            <p className="text-xl font-bold text-blue-400">{winRate.toFixed(1)}%</p>
-            <p className="text-xs text-gray-500 mt-0.5">{wins}W / {losses}L</p>
+          <CardContent className="p-5 flex flex-col gap-1">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Win Rate</p>
+            <p className="text-3xl font-bold text-blue-400">{winRate.toFixed(1)}%</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-sm font-semibold text-green-400">{wins}W</span>
+              <span className="text-gray-600">/</span>
+              <span className="text-sm font-semibold text-red-400">{losses}L</span>
+            </div>
           </CardContent>
         </Card>
 
         {/* Total P&L */}
         <Card className="bg-[#18181b] border-[#27272a]">
-          <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Total P&L</p>
-            <p className={`text-xl font-bold ${totalPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+          <CardContent className="p-5 flex flex-col gap-1">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total P&L</p>
+            <p className={`text-3xl font-bold ${totalPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
               {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
             </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              ROI <span className={stats?.roi != null && stats.roi >= 0 ? "text-green-400" : "text-red-400"}>
+                {stats?.roi != null ? `${(stats.roi * 100).toFixed(1)}%` : "—"}
+              </span>
+            </p>
+            <div className="border-t border-white/5 pt-2 mt-1 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500">{wins} wins</span>
+                <span className="text-xs font-semibold text-green-400">+${(stats?.totalWinPnl ?? 0).toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500">{losses} losses</span>
+                <span className="text-xs font-semibold text-red-400">-${Math.abs(stats?.totalLossPnl ?? 0).toFixed(2)}</span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
-        {/* Trades + Open combined */}
+        {/* Open Positions */}
         <Card className="bg-[#18181b] border-[#27272a]">
-          <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Trades</p>
-            <p className="text-xl font-bold text-white">{totalTrades}</p>
-            <p className="text-xs text-yellow-400 mt-0.5">{openCount} open</p>
+          <CardContent className="p-5 flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Open Positions</p>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400 font-semibold tracking-wide">LIVE</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              <div>
+                <p className="text-xs text-gray-500 mb-0.5">At Risk</p>
+                <p className="text-lg font-bold text-yellow-400">{openStake > 0 ? `$${openStake.toFixed(2)}` : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-0.5">If All Win</p>
+                <p className="text-lg font-bold text-emerald-400">{openPotentialProfit > 0 ? `+$${openPotentialProfit.toFixed(2)}` : "—"}</p>
+              </div>
+            </div>
+            <div className="border-t border-white/5 pt-2 mt-1 flex items-center justify-between">
+              <span className="text-xs text-gray-500">Total payout</span>
+              <span className="text-sm font-bold text-white">{openPotentialPayout > 0 ? `$${openPotentialPayout.toFixed(2)}` : "—"}</span>
+            </div>
+            <p className="text-xs text-gray-600">{openCount} trade{openCount !== 1 ? "s" : ""} open</p>
+          </CardContent>
+        </Card>
+
+        {/* All-Time Potential */}
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-5 flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">All-Time Potential</p>
+              <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              <div>
+                <p className="text-xs text-gray-500 mb-0.5">Total Wagered</p>
+                <p className="text-lg font-bold text-yellow-400">{allTimeWagered > 0 ? `$${allTimeWagered.toFixed(2)}` : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-0.5">Total Payout</p>
+                <p className="text-lg font-bold text-emerald-400">{allTimePotentialReturn > 0 ? `$${allTimePotentialReturn.toFixed(2)}` : "—"}</p>
+              </div>
+            </div>
+            <div className="border-t border-white/5 pt-2 mt-1 flex items-center justify-between">
+              <span className="text-xs text-gray-500">Net profit potential</span>
+              <span className="text-sm font-bold text-emerald-400">{allTimePotentialProfit > 0 ? `+$${allTimePotentialProfit.toFixed(2)}` : "—"}</span>
+            </div>
+            <p className="text-xs text-gray-600">{totalTrades} trades · if every trade won</p>
+          </CardContent>
+        </Card>
+
+        {/* Trades */}
+        <Card className="bg-[#18181b] border-[#27272a]">
+          <CardContent className="p-5 flex flex-col gap-1">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Trades</p>
+            <p className="text-3xl font-bold text-white">{totalTrades}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-sm text-gray-400">{settledTrades} settled</span>
+              <span className="text-gray-600">·</span>
+              <span className="text-sm font-semibold text-yellow-400">{openCount} open</span>
+            </div>
           </CardContent>
         </Card>
 
@@ -191,25 +275,59 @@ export default function Trades() {
             <div className="space-y-2">
               {openTrades.map((t: any) => {
                 const stake = parseFloat(t.costBasis ?? 0);
-                // Net profit if YES wins: (gross win per contract) × (1 - 7% fee) × contracts
                 const netProfit = t.contracts * (100 - t.priceCents) * 0.93 / 100;
+                const totalPayout = stake + netProfit;
+                const impliedProb = t.priceCents;
+                const ourProbPct = t.ourProb != null ? Math.round(t.ourProb * 100) : null;
+                const edge = ourProbPct != null ? ourProbPct - impliedProb : null;
+                const strikeLabel = t.strikeDesc ?? strikeFromTicker(t.marketTicker);
+                const sideColor = t.side?.toUpperCase() === "YES" ? "text-green-400" : "text-red-400";
                 return (
-                <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium text-white">{t.cityName}</p>
+                <div key={t.id} className="rounded-lg bg-[#27272a] border border-[#3f3f46] overflow-hidden">
+                  {/* Header row */}
+                  <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#3f3f46]">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-white">{t.cityName}</p>
+                      <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${t.side?.toUpperCase() === "YES" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                        {t.side?.toUpperCase()}
+                      </span>
+                      <span className="text-xs text-gray-400 font-medium">{strikeLabel}</span>
                       {t.marketTicker && (
                         <a href={kalshiMarketUrl(t.marketTicker, t.cityName)} target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-blue-400 transition-colors">
                           <ExternalLink className="h-3 w-3" />
                         </a>
                       )}
                     </div>
-                    <p className="text-xs text-gray-400">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)} · {t.side?.toUpperCase()} · {t.contracts} × {t.priceCents}¢</p>
+                    <p className="text-xs text-gray-500">{new Date(t.createdAt).toLocaleString()}</p>
                   </div>
-                  <div className="text-right">
-                    <p className="text-sm text-white font-medium">Stake ${stake.toFixed(2)}</p>
-                    <p className="text-xs text-green-400">Win +${netProfit.toFixed(2)} <span className="text-gray-600">/ Lose -${stake.toFixed(2)}</span></p>
-                    <p className="text-xs text-gray-600">{new Date(t.createdAt).toLocaleString()}</p>
+                  {/* Detail row */}
+                  <div className="grid grid-cols-4 divide-x divide-[#3f3f46] px-0">
+                    {/* Position */}
+                    <div className="px-4 py-2.5">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Position</p>
+                      <p className="text-sm font-semibold text-white">{t.contracts} contracts</p>
+                      <p className="text-xs text-gray-400">@ {t.priceCents}¢ each</p>
+                    </div>
+                    {/* Edge */}
+                    <div className="px-4 py-2.5">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Our Edge</p>
+                      <p className="text-sm font-semibold text-white">{ourProbPct != null ? `${ourProbPct}%` : "—"}</p>
+                      <p className={`text-xs ${edge != null && edge > 0 ? "text-green-400" : "text-red-400"}`}>
+                        {edge != null ? `${edge > 0 ? "+" : ""}${edge.toFixed(0)}% vs mkt` : `mkt ${impliedProb}%`}
+                      </p>
+                    </div>
+                    {/* Stake / Risk */}
+                    <div className="px-4 py-2.5">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">At Risk</p>
+                      <p className="text-sm font-semibold text-white">${stake.toFixed(2)}</p>
+                      <p className="text-xs text-gray-500">EV: {t.evCents != null ? `${t.evCents.toFixed(1)}¢` : "—"}</p>
+                    </div>
+                    {/* Payout */}
+                    <div className="px-4 py-2.5">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">If Win</p>
+                      <p className="text-sm font-semibold text-green-400">+${netProfit.toFixed(2)}</p>
+                      <p className="text-xs text-gray-400">Total ${totalPayout.toFixed(2)}</p>
+                    </div>
                   </div>
                 </div>
                 );
@@ -261,6 +379,12 @@ export default function Trades() {
                 <tbody>
                   {filtered.map((t: any) => {
                     const pnl = parseFloat(t.pnl ?? 0);
+                    const stake = parseFloat(t.costBasis ?? 0);
+                    const totalReturn = pnl + stake;
+                    const potentialWin = t.contracts != null && t.priceCents != null
+                      ? (Number(t.contracts) * (100 - Number(t.priceCents)) * 0.93) / 100
+                      : null;
+                    const potentialPayout = potentialWin != null ? potentialWin + stake : null;
                     return (
                       <tr key={t.id} className="border-b border-[#27272a] hover:bg-[#27272a]/50 transition-colors">
                         <td className="px-4 py-3 text-white font-medium">{t.cityName}</td>
@@ -289,8 +413,31 @@ export default function Trades() {
                         <td className="px-4 py-3 text-gray-300">{t.contracts}</td>
                         <td className="px-4 py-3 text-gray-300">{t.priceCents != null ? `${t.priceCents}¢` : '—'}</td>
                         <td className="px-4 py-3 text-gray-300">{t.settlementValue != null ? `$${parseFloat(t.settlementValue).toFixed(2)}` : '—'}</td>
-                        <td className={`px-4 py-3 font-semibold ${pnl > 0 ? 'text-green-400' : pnl < 0 ? 'text-red-400' : 'text-gray-400'}`}>
-                          {t.pnl != null ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
+                        <td className="px-4 py-3">
+                          {t.won === true ? (
+                            <>
+                              <p className="font-semibold text-green-400">+${pnl.toFixed(2)} profit</p>
+                              <p className="text-[10px] text-gray-500 mt-0.5">${totalReturn.toFixed(2)} total returned</p>
+                              <p className="text-[10px] text-gray-600">${stake.toFixed(2)} stake recovered</p>
+                            </>
+                          ) : t.won === false ? (
+                            <>
+                              <p className="font-semibold text-red-400">-${stake.toFixed(2)} lost</p>
+                              <p className="text-[10px] text-gray-500 mt-0.5">$0.00 returned</p>
+                              <p className="text-[10px] text-gray-600">${stake.toFixed(2)} stake forfeited</p>
+                            </>
+                          ) : (
+                            <>
+                              {potentialWin != null ? (
+                                <>
+                                  <p className="text-sm font-semibold text-emerald-400">+${potentialWin.toFixed(2)} if win</p>
+                                  <p className="text-xs text-gray-400 mt-0.5">${potentialPayout!.toFixed(2)} total payout</p>
+                                </>
+                              ) : (
+                                <p className="text-sm text-gray-500">—</p>
+                              )}
+                            </>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">

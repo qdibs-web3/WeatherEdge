@@ -407,18 +407,33 @@ export async function getTradeCount(userId: number): Promise<number> {
 }
 
 export async function getTradeStats(userId: number, isPaper: boolean | null = false) {
+  // Settled trades for win/loss/pnl stats
   const rows = isPaper === null
     ? await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled'", [userId])
     : await q("SELECT * FROM trades_v2 WHERE user_id = ? AND status = 'settled' AND is_paper = ?", [userId, isPaper ? 1 : 0]);
+  // All trades (including open/pending) for total wagered + potential return
+  const allRows = isPaper === null
+    ? await q("SELECT cost_basis, contracts, price_cents FROM trades_v2 WHERE user_id = ?", [userId])
+    : await q("SELECT cost_basis, contracts, price_cents FROM trades_v2 WHERE user_id = ? AND is_paper = ?", [userId, isPaper ? 1 : 0]);
   const total = rows.length;
   const wins = rows.filter((t) => t.won == 1 || t.won === true).length;
   const totalPnl = rows.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0);
-  const totalCost = rows.reduce((s, t) => s + parseFloat(String(t.cost_basis ?? 0)), 0);
+  const totalCost = allRows.reduce((s, t) => s + parseFloat(String(t.cost_basis ?? 0)), 0);
+  // Total potential return: for every trade ever placed, what's the max payout (stake + gross win after 7% fee)
+  const totalPotentialReturn = allRows.reduce((s, t) => {
+    const stake = parseFloat(String(t.cost_basis ?? 0));
+    const contracts = Number(t.contracts ?? 0);
+    const priceCents = Number(t.price_cents ?? 0);
+    const potentialProfit = (contracts * (100 - priceCents) * 0.93) / 100;
+    return s + stake + potentialProfit;
+  }, 0);
   const winRows = rows.filter((t) => t.won == 1 || t.won === true);
   const lossRows = rows.filter((t) => t.won == 0 || t.won === false);
-  const avgWin = winRows.length > 0 ? winRows.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0) / winRows.length : 0;
-  const avgLoss = lossRows.length > 0 ? lossRows.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0) / lossRows.length : 0;
-  return { total, wins, losses: total - wins, winRate: total > 0 ? wins / total : 0, totalPnl, roi: totalCost > 0 ? totalPnl / totalCost : 0, avgWin, avgLoss };
+  const totalWinPnl  = winRows.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0);
+  const totalLossPnl = lossRows.reduce((s, t) => s + parseFloat(String(t.pnl ?? 0)), 0);
+  const avgWin  = winRows.length  > 0 ? totalWinPnl  / winRows.length  : 0;
+  const avgLoss = lossRows.length > 0 ? totalLossPnl / lossRows.length : 0;
+  return { total, wins, losses: total - wins, winRate: total > 0 ? wins / total : 0, totalPnl, totalWagered: totalCost, totalPotentialReturn, roi: totalCost > 0 ? totalPnl / totalCost : 0, avgWin, avgLoss, totalWinPnl, totalLossPnl };
 }
 
 export async function getDailyPnl(userId: number, days = 30, isPaper: boolean | null = false) {
@@ -652,6 +667,8 @@ export async function getLatestForecasts() {
     windDirection: r.wind_direction ?? null,
     precipChance: r.precip_chance != null ? Number(r.precip_chance) : null,
     updatedAt: r.fetched_at,
+    tomorrowHigh: r.tomorrow_high != null ? Number(r.tomorrow_high) : null,
+    tomorrowForecastDate: r.tomorrow_forecast_date ?? null,
   }));
 }
 
@@ -666,11 +683,14 @@ export async function upsertForecast(data: {
   windSpeed?: string;
   windDirection?: string;
   precipChance?: number | null;
+  forecastDate?: string | null;
+  tomorrowHigh?: number | null;
+  tomorrowForecastDate?: string | null;
 }) {
   await q(
     `INSERT INTO forecast_cache_v2
-       (city_code, city_name, forecast_high, low_temp, sigma, short_forecast, detailed_forecast, wind_speed, wind_direction, precip_chance, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+       (city_code, city_name, forecast_high, low_temp, sigma, short_forecast, detailed_forecast, wind_speed, wind_direction, precip_chance, forecast_date, tomorrow_high, tomorrow_forecast_date, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
      ON DUPLICATE KEY UPDATE
        forecast_high = VALUES(forecast_high),
        low_temp = VALUES(low_temp),
@@ -680,6 +700,9 @@ export async function upsertForecast(data: {
        wind_speed = VALUES(wind_speed),
        wind_direction = VALUES(wind_direction),
        precip_chance = VALUES(precip_chance),
+       forecast_date = VALUES(forecast_date),
+       tomorrow_high = VALUES(tomorrow_high),
+       tomorrow_forecast_date = VALUES(tomorrow_forecast_date),
        fetched_at = NOW()`,
     [
       data.cityCode,
@@ -692,6 +715,98 @@ export async function upsertForecast(data: {
       data.windSpeed ?? null,
       data.windDirection ?? null,
       data.precipChance ?? null,
+      data.forecastDate ?? null,
+      data.tomorrowHigh ?? null,
+      data.tomorrowForecastDate ?? null,
     ]
   );
+}
+
+// ─── Raw SQL helpers (exported for services that need direct access) ───────────
+export async function queryRaw(sql: string, params: any[] = []): Promise<any[]> {
+  return q(sql, params);
+}
+
+export async function execRaw(sql: string, params: any[] = []): Promise<mysql.ResultSetHeader> {
+  return exec(sql, params);
+}
+
+// ─── Forecast Accuracy ────────────────────────────────────────────────────────
+
+export async function getForecastAccuracy(cityCode?: string): Promise<any[]> {
+  if (cityCode) {
+    return q(
+      `SELECT * FROM forecast_accuracy_v2 WHERE city_code = ? ORDER BY forecast_date DESC LIMIT 500`,
+      [cityCode]
+    );
+  }
+  return q(`SELECT * FROM forecast_accuracy_v2 ORDER BY forecast_date DESC LIMIT 500`);
+}
+
+export async function getForecastAccuracyStats(): Promise<
+  {
+    cityCode: string;
+    cityName: string;
+    samples: number;
+    avgErrorNws: number | null;
+    stdErrorNws: number | null;
+    avgErrorEnsemble: number | null;
+    stdErrorEnsemble: number | null;
+  }[]
+> {
+  const rows = await q(`
+    SELECT
+      city_code,
+      city_name,
+      COUNT(*) AS samples,
+      AVG(error_nws) AS avg_error_nws,
+      STDDEV(error_nws) AS std_error_nws,
+      AVG(error_ensemble) AS avg_error_ensemble,
+      STDDEV(error_ensemble) AS std_error_ensemble
+    FROM forecast_accuracy_v2
+    GROUP BY city_code, city_name
+    ORDER BY city_name ASC
+  `);
+  return rows.map((r) => ({
+    cityCode: r.city_code,
+    cityName: r.city_name,
+    samples: Number(r.samples ?? 0),
+    avgErrorNws: r.avg_error_nws != null ? Math.round(Number(r.avg_error_nws) * 10) / 10 : null,
+    stdErrorNws: r.std_error_nws != null ? Math.round(Number(r.std_error_nws) * 10) / 10 : null,
+    avgErrorEnsemble:
+      r.avg_error_ensemble != null ? Math.round(Number(r.avg_error_ensemble) * 10) / 10 : null,
+    stdErrorEnsemble:
+      r.std_error_ensemble != null ? Math.round(Number(r.std_error_ensemble) * 10) / 10 : null,
+  }));
+}
+
+// ─── Kalshi Market History ─────────────────────────────────────────────────────
+
+export async function getKalshiMarketHistoryCount(): Promise<number> {
+  const rows = await q(`SELECT COUNT(*) AS cnt FROM kalshi_market_history`);
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+export async function getKalshiHistoryStats(): Promise<any[]> {
+  const rows = await q(`
+    SELECT
+      city_code,
+      settlement_result,
+      COUNT(*) AS cnt
+    FROM kalshi_market_history
+    GROUP BY city_code, settlement_result
+    ORDER BY city_code ASC, settlement_result ASC
+  `);
+  // Group into { cityCode, yes, no, total }
+  const map: Record<string, { cityCode: string; yes: number; no: number; total: number }> = {};
+  for (const r of rows) {
+    const code = r.city_code ?? "UNKNOWN";
+    if (!map[code]) map[code] = { cityCode: code, yes: 0, no: 0, total: 0 };
+    const cnt = Number(r.cnt ?? 0);
+    map[code].total += cnt;
+    const result = (r.settlement_result ?? "").toLowerCase();
+    if (result === "yes") map[code].yes += cnt;
+    if (result === "no") map[code].no += cnt;
+  }
+  return Object.values(map);
 }

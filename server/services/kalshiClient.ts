@@ -219,4 +219,12 @@ export class KalshiClient {
   isConfigured(): boolean {
     return !!this.privateKeyPem && !!this.keyId;
   }
+
+  async getSettledMarkets(params: {
+    series_ticker?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<{ markets: KalshiMarket[]; cursor?: string }> {
+    return this.getMarkets({ ...params, status: "settled" });
+  }
 }

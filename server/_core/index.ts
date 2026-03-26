@@ -11,6 +11,8 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { setupVite, serveStatic } from "./vite";
 import { botManager } from "../services/botManager";
+import { ensureHistoricalTables, runNightlyAccuracyJob } from "../services/historicalDataService";
+import { clearEnsembleCache } from "../services/openMeteoService";
 
 const app = express();
 
@@ -52,6 +54,19 @@ async function startServer() {
   console.log('[Server] Initializing Bot Manager...');
   await botManager.initialize();
   console.log('[Server] Bot Manager initialized');
+
+  // Clear stale ensemble cache so date-pinned API calls start fresh
+  clearEnsembleCache();
+
+  // Ensure historical tables exist
+  await ensureHistoricalTables();
+  console.log('[Server] Historical tables ready');
+
+  // Nightly accuracy job: run at startup (catches up on yesterday) then every 24h
+  runNightlyAccuracyJob().catch(e => console.error('[Historical] Nightly job failed:', e));
+  setInterval(() => {
+    runNightlyAccuracyJob().catch(e => console.error('[Historical] Nightly job failed:', e));
+  }, 24 * 60 * 60 * 1000);
 
   // Handle graceful shutdown
   const shutdown = async () => {

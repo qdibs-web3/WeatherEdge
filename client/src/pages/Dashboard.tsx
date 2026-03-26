@@ -79,7 +79,7 @@ export default function Dashboard() {
   const balanceAmt = balance ? ((balance as any).balance ?? 0) / 100 : 0;
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="p-6 space-y-6 max-w-[70%] mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -111,9 +111,10 @@ export default function Dashboard() {
       )}
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard title="Kalshi Balance" value={`$${balanceAmt.toFixed(2)}`} icon={DollarSign} color="green" />
         <StatCard title="Total P&L" value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`} icon={TrendingUp} color={totalPnl >= 0 ? "green" : "red"} />
+        <StatCard title="Total Wagered" value={`$${(stats?.totalWagered ?? 0).toFixed(2)}`} sub="sum of all stakes" icon={DollarSign} color="yellow" />
         <StatCard title="Win Rate" value={`${winRate}%`} sub={`${stats?.wins ?? 0}W / ${stats?.losses ?? 0}L`} icon={Target} color="blue" />
         <StatCard title="Open Positions" value={openTrades?.length ?? 0} sub={`${stats?.total ?? 0} total trades`} icon={Activity} color="purple" />
       </div>
@@ -204,35 +205,42 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent>
           {recentTrades && recentTrades.length > 0 ? (
-            <div className="space-y-2">
-              {recentTrades.map((t: any) => (
-                <div key={t.id} className="flex items-center justify-between py-2 border-b border-[#27272a] last:border-0">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${t.won === true ? 'bg-green-400' : t.won === false ? 'bg-red-400' : 'bg-yellow-400'}`} />
-                    <div>
-                      <p className="text-sm text-white font-medium">{t.cityName}</p>
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-xs text-gray-500">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)} · {t.side?.toUpperCase()}</p>
-                        {t.marketTicker && (
-                          <a
-                            href={t.won == null ? kalshiMarketUrl(t.marketTicker, t.cityName) : KALSHI_ACTIVITY_URL}
-                            target="_blank" rel="noopener noreferrer"
-                            className="text-gray-600 hover:text-blue-400 transition-colors"
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
-                      </div>
+            <div className="space-y-0">
+              {recentTrades.map((t: any) => {
+                const stake = parseFloat(t.costBasis ?? 0);
+                const evPct = t.evCents != null ? `EV +${parseFloat(t.evCents).toFixed(1)}¢` : null;
+                return (
+                <div key={t.id} className="flex items-center gap-3 py-2.5 border-b border-[#27272a] last:border-0">
+                  {/* Status dot */}
+                  <div className={`w-2 h-2 rounded-full shrink-0 ${t.won === true ? 'bg-green-400' : t.won === false ? 'bg-red-400' : 'bg-yellow-400'}`} />
+                  {/* Left: city + strike */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm text-white font-medium truncate">{t.cityName}</p>
+                      {t.isPaper && <span className="text-[10px] bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 rounded px-1">paper</span>}
+                      {t.marketTicker && (
+                        <a href={t.won == null ? kalshiMarketUrl(t.marketTicker, t.cityName) : KALSHI_ACTIVITY_URL} target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-blue-400 transition-colors shrink-0">
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
                     </div>
+                    <p className="text-xs text-gray-500">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)} · {t.side?.toUpperCase()} · {t.contracts}× @ {t.priceCents}¢</p>
                   </div>
-                  <div className="text-right">
+                  {/* Middle: cost + EV */}
+                  <div className="text-right shrink-0">
+                    <p className="text-xs text-gray-400">Cost ${stake.toFixed(2)}</p>
+                    {evPct && <p className="text-xs text-blue-400">{evPct}</p>}
+                  </div>
+                  {/* Right: P&L + date */}
+                  <div className="text-right shrink-0 min-w-[60px]">
                     <p className={`text-sm font-semibold ${t.pnl > 0 ? 'text-green-400' : t.pnl < 0 ? 'text-red-400' : 'text-gray-400'}`}>
                       {t.pnl != null ? `${t.pnl > 0 ? '+' : ''}$${parseFloat(t.pnl).toFixed(2)}` : '—'}
                     </p>
                     <p className="text-xs text-gray-500">{new Date(t.createdAt).toLocaleDateString()}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="text-center py-8 text-gray-500 text-sm">No trades yet. Start the bot to begin trading.</div>

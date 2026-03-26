@@ -56,9 +56,9 @@ export async function getEnsembleForecast(
 
   // Fetch all three models in parallel — fail gracefully per model
   const [bestMatchRes, iconRes, gemRes] = await Promise.allSettled([
-    fetchModelTemp(lat, lon, timezone, "best_match"),
-    fetchModelTemp(lat, lon, timezone, "icon_global"),
-    fetchModelTemp(lat, lon, timezone, "gem_seamless"),
+    fetchModelTemp(lat, lon, timezone, date, "best_match"),
+    fetchModelTemp(lat, lon, timezone, date, "icon_global"),
+    fetchModelTemp(lat, lon, timezone, date, "gem_seamless"),
   ]);
 
   const bestMatch = bestMatchRes.status === "fulfilled" ? bestMatchRes.value : null;
@@ -97,6 +97,7 @@ async function fetchModelTemp(
   lat: number,
   lon: number,
   timezone: string,
+  date: string,   // YYYY-MM-DD — pinned via start_date/end_date so UTC rollover can't shift the result
   model: string
 ): Promise<number> {
   const url = new URL(OPEN_METEO_BASE);
@@ -105,7 +106,8 @@ async function fetchModelTemp(
   url.searchParams.set("daily",            "temperature_2m_max");
   url.searchParams.set("temperature_unit", "fahrenheit");
   url.searchParams.set("timezone",         timezone);
-  url.searchParams.set("forecast_days",    "2");
+  url.searchParams.set("start_date",       date);
+  url.searchParams.set("end_date",         date);
   url.searchParams.set("models",           model);
 
   const res = await axios.get(url.toString(), { timeout: 8000 });
@@ -113,7 +115,6 @@ async function fetchModelTemp(
   if (!maxTemps.length || maxTemps[0] == null) {
     throw new Error(`No temperature data for model ${model}`);
   }
-  // index 0 = today's forecast high
   return maxTemps[0];
 }
 
