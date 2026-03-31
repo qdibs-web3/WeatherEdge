@@ -12,6 +12,21 @@ const PAGE_SIZE = 20;
 
 const KALSHI_ACTIVITY_URL = "https://kalshi.com/account/activity";
 
+function parseDateFromTicker(ticker: string | null): string | null {
+  if (!ticker) return null;
+  const MONTH_MAP: Record<string, string> = {
+    JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
+    JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
+  };
+  const m = ticker.toUpperCase().match(/-(\d{2})([A-Z]{3})(\d{2})(?:-|$)/);
+  if (!m) return null;
+  const year = 2000 + parseInt(m[1], 10);
+  const month = MONTH_MAP[m[2]];
+  const day = m[3].padStart(2, "0");
+  if (!month) return null;
+  return `${year}-${month}-${day}`;
+}
+
 function strikeFromTicker(ticker: string | null): string {
   if (!ticker) return "—";
   const parts = ticker.split("-");
@@ -47,6 +62,11 @@ export default function Trades() {
   );
   const { data: stats, refetch: refetchStats } = trpc.bot.getTradeStats.useQuery({ mode }, { refetchInterval: 30000 });
   const { data: openTrades } = trpc.bot.getOpenTrades.useQuery({ mode }, { refetchInterval: 10000 });
+  const { data: forecasts } = trpc.bot.getForecasts.useQuery(undefined, { refetchInterval: 60000 });
+  const forecastMap = (forecasts ?? []).reduce((acc: Record<string, any>, f: any) => {
+    acc[f.cityCode] = f;
+    return acc;
+  }, {} as Record<string, any>);
   const { data: dailyPnl, refetch: refetchDailyPnl } = trpc.bot.getDailyPnl.useQuery({ days: 30, mode }, { refetchInterval: 60000 });
   const recalcMutation = trpc.bot.recalculatePnl.useMutation({
     onSuccess: (data) => {
@@ -282,6 +302,19 @@ export default function Trades() {
                 const edge = ourProbPct != null ? ourProbPct - impliedProb : null;
                 const strikeLabel = t.strikeDesc ?? strikeFromTicker(t.marketTicker);
                 const sideColor = t.side?.toUpperCase() === "YES" ? "text-green-400" : "text-red-400";
+                const settlementDate = parseDateFromTicker(t.marketTicker);
+                const fc = forecastMap[t.cityCode];
+                // Prefer blended forecast stored at trade entry (NWS×40% + ensemble×60% + bias).
+                // Fall back to live NWS lookup for trades placed before this was stored.
+                const projectedHigh = t.forecastTemp != null
+                  ? { temp: t.forecastTemp, label: settlementDate === fc?.forecastDate ? "today · blended" : "tomorrow · blended" }
+                  : fc
+                    ? settlementDate === fc.forecastDate
+                      ? { temp: fc.highTemp, label: "today · NWS" }
+                      : settlementDate === fc.tomorrowForecastDate
+                        ? { temp: fc.tomorrowHigh, label: "tomorrow · NWS" }
+                        : null
+                    : null;
                 return (
                 <div key={t.id} className="rounded-lg bg-[#27272a] border border-[#3f3f46] overflow-hidden">
                   {/* Header row */}
@@ -301,12 +334,20 @@ export default function Trades() {
                     <p className="text-xs text-gray-500">{new Date(t.createdAt).toLocaleString()}</p>
                   </div>
                   {/* Detail row */}
-                  <div className="grid grid-cols-4 divide-x divide-[#3f3f46] px-0">
+                  <div className="grid grid-cols-5 divide-x divide-[#3f3f46] px-0">
                     {/* Position */}
                     <div className="px-4 py-2.5">
                       <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Position</p>
                       <p className="text-sm font-semibold text-white">{t.contracts} contracts</p>
                       <p className="text-xs text-gray-400">@ {t.priceCents}¢ each</p>
+                    </div>
+                    {/* Projected High */}
+                    <div className="px-4 py-2.5">
+                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Proj High</p>
+                      <p className="text-sm font-semibold text-white">
+                        {projectedHigh?.temp != null ? `${projectedHigh.temp}°F` : "—"}
+                      </p>
+                      <p className="text-xs text-gray-500">{projectedHigh?.label ?? "—"}</p>
                     </div>
                     {/* Edge */}
                     <div className="px-4 py-2.5">

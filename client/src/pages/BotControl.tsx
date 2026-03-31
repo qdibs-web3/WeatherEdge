@@ -13,13 +13,13 @@ const ALL_CITIES = [
   { code: "NYC", name: "New York City" },   { code: "LAX", name: "Los Angeles" },
   { code: "CHI", name: "Chicago" },         { code: "HOU", name: "Houston" },
   { code: "PHX", name: "Phoenix" },         { code: "PHI", name: "Philadelphia" },
-  { code: "DAL", name: "Dallas" },
-  { code: "ATL", name: "Atlanta" },         { code: "SFO", name: "San Francisco" },
-  { code: "SEA", name: "Seattle" },         { code: "DEN", name: "Denver" },
-  { code: "BOS", name: "Boston" },          { code: "LAS", name: "Las Vegas" },
-  { code: "OKC", name: "Oklahoma City" },   { code: "MSP", name: "Minneapolis" },
-  { code: "DCA", name: "Washington DC" },   { code: "MIA", name: "Miami" },
-  { code: "AUS", name: "Austin" },          { code: "MSY", name: "New Orleans" },
+  { code: "DAL", name: "Dallas" },          { code: "ATL", name: "Atlanta" },
+  { code: "SFO", name: "San Francisco" },   { code: "SEA", name: "Seattle" },
+  { code: "DEN", name: "Denver" },          { code: "BOS", name: "Boston" },
+  { code: "LAS", name: "Las Vegas" },       { code: "OKC", name: "Oklahoma City" },
+  { code: "MSP", name: "Minneapolis" },     { code: "DCA", name: "Washington DC" },
+  { code: "MIA", name: "Miami" },           { code: "AUS", name: "Austin" },
+  { code: "MSY", name: "New Orleans" },     { code: "SAT", name: "San Antonio" },
 ];
 
 export default function BotControl() {
@@ -335,6 +335,9 @@ export default function BotControl() {
         </CardContent>
       </Card>
 
+      {/* Kalshi Series Discovery */}
+      <KalshiSeriesDiscovery />
+
       {/* Backtest Performance Analysis */}
       {backtest && (
         <Card className="bg-[#18181b] border-[#27272a]">
@@ -514,5 +517,87 @@ export default function BotControl() {
         </Button>
       </div>
     </div>
+  );
+}
+
+// ─── Kalshi Series Discovery ────────────────────────────────────────────────
+// Queries the live Kalshi API for all KXHIGH* and KXLOW* weather series so you can
+// find the correct seriesTicker to use when adding new cities.
+function KalshiSeriesDiscovery() {
+  const [show, setShow] = useState(false);
+  const { data, isFetching, error, refetch } = trpc.bot.discoverWeatherSeries.useQuery(undefined, {
+    enabled: false,
+  });
+
+  return (
+    <Card className="bg-[#18181b] border-[#27272a]">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+            <Zap className="h-4 w-4 text-yellow-400" /> Kalshi Series Discovery
+          </CardTitle>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs text-gray-400 hover:text-white h-7"
+            onClick={() => { setShow(true); refetch(); }}
+            disabled={isFetching}
+          >
+            {isFetching ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+            {isFetching ? "Fetching..." : "Fetch from Kalshi"}
+          </Button>
+        </div>
+        <CardDescription>
+          Find correct series tickers for new cities before adding them to the bot config.
+        </CardDescription>
+      </CardHeader>
+      {show && (
+        <CardContent>
+          {error && (
+            <p className="text-red-400 text-xs">Error: {(error as any).message}</p>
+          )}
+          {data && data.length === 0 && (
+            <p className="text-gray-500 text-xs">No weather series found. Check your Kalshi API credentials.</p>
+          )}
+          {data && data.length > 0 && (
+            <div className="overflow-x-auto">
+              {(["high", "low"] as const).map((type) => {
+                const rows = data.filter((s: any) => s.type === type);
+                if (rows.length === 0) return null;
+                return (
+                  <div key={type} className="mb-4">
+                    <p className="text-xs font-semibold text-gray-400 mb-1 uppercase tracking-wide">
+                      {type === "high" ? "High Temp (KXHIGH*)" : "Low Temp (KXLOW*)"}
+                      <span className="ml-2 text-gray-600 normal-case font-normal">{rows.length} series</span>
+                    </p>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-[#27272a] text-gray-500">
+                          <th className="text-left px-2 py-2 font-medium">Series Ticker</th>
+                          <th className="text-left px-2 py-2 font-medium">Title</th>
+                          <th className="text-left px-2 py-2 font-medium">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((s: any) => (
+                          <tr key={s.ticker} className="border-b border-[#27272a]/50 hover:bg-[#27272a]/30">
+                            <td className="px-2 py-1.5 font-mono text-cyan-400">{s.ticker}</td>
+                            <td className="px-2 py-1.5 text-gray-300">{s.title}</td>
+                            <td className="px-2 py-1.5 text-gray-500">{s.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+              <p className="text-xs text-gray-600 mt-3">
+                Copy the ticker from the row matching your city and paste it into nwsService.ts as the seriesTicker or lowSeriesTicker.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }

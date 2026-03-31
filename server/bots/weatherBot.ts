@@ -42,54 +42,75 @@ const KALSHI_FEE_RATE = 0.07;
 // ALL 5 bets at 15-19¢ also lost. Raising from 15¢ → 20¢ would have
 // blocked all 12 sub-20¢ losses while keeping every win (lowest win was @22¢).
 // At <20¢ a 3°F forecast error (within 1σ for most cities) completely wipes edge.
+// Reverted 10¢ → 20¢ (2026-03-29, sim 6 post-run): Mid-run drop to 10¢ contributed to
+// wrong-directional bets (BOS, AUS, DC). Sim4 proof: ALL 12 bets at ≤18¢ lost (0% win rate).
+// At <20¢ a 3°F forecast error (within 1σ for most cities) completely wipes edge.
+// Our high-confidence target trades (MSY-type, 70%+ ourProb) naturally price at 22-35¢
+// where market underprices due to not using bias+ensemble. 20¢ is the correct floor.
 const MIN_PRICE_CENTS = 20;
-//
-// For BETWEEN-NO bets specifically: require NO ≥ this price.
-// When market prices YES > 50¢ (NO < 50¢), market consensus says temp WILL land
-// in that 1°F range. Sim4: between-NO at NO < 50¢ → 31% win rate (4W/9L).
-// Between-NO at NO ≥ 50¢ → 50% win rate. Combined with distance guard → 80%+.
-const MIN_BETWEEN_NO_PRICE_CENTS = 50;
-//
-// For BETWEEN-NO bets: range midpoint must be at least this many σ from forecast.
-// A 1°F range within 1.5σ of our forecast has meaningful probability of being hit
-// by any reasonable forecast error. Sim4: all remaining between-NO losses at 50-55¢
-// had range within ~1.2σ of blended forecast. Wins had range ≥1.5σ away.
-const MIN_BETWEEN_NO_SIGMA_DIST = 1.5;
 //
 // NEVER trade a market closing within this many minutes.
 const MIN_MINUTES_TO_CLOSE = 60;
 //
 // Hard cap on entry price.
-// Raised 55¢ → 60¢ (2026-03-25, sim 5 start).
-// The MIN_EV_CENTS_LOCKED=10¢ filter acts as a natural secondary gate:
-//   at 60¢, EV≥10¢ requires ourProb≥72% (vs 67% required at 55¢).
-// So only high-conviction signals pass at 60¢ — the EV filter self-polices the expansion.
-// Breakeven actual WR at 60¢ = 61.7%. Requires sim 5 validated WR ≥ 62% to be profitable.
-// If sim 5 WR falls below 62%, revert to 55¢.
-const MAX_PRICE_CENTS_HARD_CAP = 60;
+// Raised 60¢ → 75¢ (2026-03-26, sim 5).
+// Raised 75¢ → 82¢ (2026-03-29, sim 6).
+// Rationale: contracts priced 75-82¢ reflect ~80-90% probability in the market.
+// Our directional safety guard (YES ≥0.5σ favorable, NO ≥1.5σ safe) replaces
+// the old MAX_STRIKE_SIGMA guard and ensures we only enter when the forecast
+// strongly supports the bet direction — not just when the strike is nearby.
+// EV=8¢ filter: at 82¢ entry requires ourProb ≥ 88% to pass.
+// Breakeven real WR: 75¢=76.0%, 80¢=81.0%, 82¢=83.2%.
+const MAX_PRICE_CENTS_HARD_CAP    = 82;
+const NO_HIGH_CONF_MAX_PRICE_CENTS = 90; // NO trades with safety ≥ 1.5σ may trade up to 90¢
 //
 // Minimum win probability required to place any trade.
 // Uses city.sigma (NWS forecast accuracy) for probability calculations — NOT
 // sigmaMkt (market-implied vol which is 70% wider and inflates deep-OTM probabilities).
-// 70% model conviction ≈ 59-62% real win rate (model is overconfident by ~10%).
-const MIN_CONVICTION = 0.70;
+// Lowered 70% → 65% (2026-03-26): spring warm season gap.
+// Lowered 65% → 60% (2026-03-26): regime filter fix means some signals now reach conviction check.
+// Lowered 60% → 55% (2026-03-29, sim 6): directional safety guard (YES ≥0.5σ, NO ≥1.5σ) provides
+//   structural protection that the regime filter was attempting to give.
+// Reverted 50% → 65% (2026-03-29, sim 6 post-run): 50% is a coin flip — not conviction.
+// Mid-run drop to 50% (combined with YES_SAFETY=0.0) allowed 51% ourProb bets and caused
+// wrong-directional losses (BOS/AUS/DC). 65% requires forecast to strongly favor outcome:
+// at sigma=3.2°F (NYC), 65% ourProb means forecast is ~1σ past the strike — clear edge.
+// High-value target: MSY-type trades at 70%+ ourProb are the model. 65% is the floor.
+const MIN_CONVICTION = 0.60;
 //
 // Minimum model edge over market-implied probability.
 // Raised from 0.03 → 0.05: weather markets reprice 2-5% daily as new NWS
 // updates propagate. A 3% edge is indistinguishable from daily repricing noise.
-// 5% edge requires a meaningful forecast difference to enter — real signal only.
-const MIN_EDGE = 0.05;
+// Raised 0.05 → 0.08 (2026-03-29, sim 6): with MIN_CONVICTION lowered to 55%,
+// a stronger edge requirement prevents marginal entries. 8% edge at 55% ourProb
+// requires market pricing ≤47¢ YES — a meaningful pricing gap, not noise.
+const MIN_EDGE = 0.08;
 //
 // Locked EV threshold — not user-editable to prevent under-filtering.
 // Raised from 6¢ → 10¢: ensures the trade has meaningful expected profit.
-// At 70% conviction and 55¢ cap: EV = 0.70*45*0.93 - 0.30*55 = 12.7¢ — passes.
-// At 70% conviction and 60¢:     EV = 0.70*40*0.93 - 0.30*60 = 8.0¢  — marginal.
-// The 10¢ bar naturally rejects marginal entries near the price cap.
-const MIN_EV_CENTS_LOCKED = 10;
+// Lowered 10¢ → 8¢ (2026-03-29, sim 6): high-probability bets (priced 75-82¢) have
+// naturally compressed EV even when ourProb strongly agrees. E.g. at 85% ourProb and
+// 80¢ price: EV = 0.85*20*0.93 - 0.15*80 = 15.8 - 12 = 3.8¢ — would fail 10¢ bar.
+// 8¢ bar still requires real edge; it just doesn't penalize high-conviction high-price bets.
+const MIN_EV_CENTS_LOCKED = 8;
 //
 // Minimum open interest — lowered from 200 → 100 to surface more cheap contracts
 // (the 21-55¢ range has lower OI than expensive markets). Still filters dead markets.
 const MIN_LIQUIDITY_LOCKED = 100;
+//
+// YES directional safety margin (σ). Forecast must be this many sigma past the strike
+// in the favorable direction before placing a YES bet.
+// Was correctly 0.5σ at sim 6 start; dropped to 0.0σ mid-run which caused BOS/AUS/DC losses.
+// Reverted to 0.5σ: requires forecast to be half a sigma past strike — not merely on the
+// right side of it. 0.0σ technically blocks wrong-direction bets (ourProb <50%), but 0.5σ
+// provides a real buffer against ensemble flips (BOS flip: safety was 0.02σ when bet placed).
+const YES_SAFETY_SIGMA = 0.5;
+//
+// Ensemble spread guard REMOVED (2026-03-29, sim 7): The city-level spread guard was redundant
+// with the per-market NWS-ensemble divergence guard (4°F, below in analyzeCity). The spread guard
+// was also unnormalized — a 7°F spread means very different things for MIA (σ=2.1) vs MSP (σ=4.2).
+// High-σ cities like CHI and MSP were being skipped on their best trading days.
+// The per-market NWS-divergence guard provides better protection at the right granularity.
 
 /**
  * Expected value in cents for buying one contract at priceCents.
@@ -158,7 +179,7 @@ function signalConfidence(
 const NWS_UPDATE_HOURS_LOCAL    = [6, 12, 18, 0];
 const HIGH_FREQ_WINDOW_MINUTES  = 45;
 const HIGH_FREQ_INTERVAL_MS     = 2  * 60 * 1000;   // 2 min
-const LOW_FREQ_INTERVAL_MS      = 30 * 60 * 1000;   // 30 min
+const LOW_FREQ_INTERVAL_MS      = 10 * 60 * 1000;   // 10 min
 
 function isInHighFreqWindow(enabledCities: string[]): boolean {
   const now = new Date();
@@ -256,6 +277,11 @@ export class WeatherBot {
 
   // Track open positions to avoid doubling up on the same exact contract
   private openPositionTickers: Set<string> = new Set();
+  // Track city+date → sides held to prevent cross-side hedges (YES + NO on same city/day).
+  // Same-side stacking (two NO bets at different strikes) is allowed — they're correlated wins,
+  // not hedges. Cross-side (YES + NO) is blocked: if actual temp lands between the strikes,
+  // both lose simultaneously. Key: "${cityCode}:${YYYY-MM-DD}", value: set of sides held.
+  private openPositionCityDates: Map<string, Set<"yes" | "no">> = new Map();
   // Track daily trades to enforce limits
   private dailyTradeCount = 0;
   private dailyTradeDate = "";
@@ -341,8 +367,17 @@ export class WeatherBot {
       try {
         const openPaperTrades = await db.getOpenTrades(this.config.userId, true);
         this.openPositionTickers.clear();
+        this.openPositionCityDates.clear();
         for (const trade of openPaperTrades) {
-          if (trade.marketTicker) this.openPositionTickers.add(trade.marketTicker);
+          if (trade.marketTicker) {
+            this.openPositionTickers.add(trade.marketTicker);
+            const d = parseDateFromTicker(trade.marketTicker);
+            if (d && trade.cityCode && trade.side) {
+              const key = `${trade.cityCode}:${d}`;
+              if (!this.openPositionCityDates.has(key)) this.openPositionCityDates.set(key, new Set());
+              this.openPositionCityDates.get(key)!.add(trade.side as "yes" | "no");
+            }
+          }
         }
         if (this.openPositionTickers.size > 0) {
           console.log(`[WeatherBot] [PAPER] ${this.openPositionTickers.size} open paper position(s) loaded from DB — will skip these`);
@@ -354,8 +389,17 @@ export class WeatherBot {
       try {
         const openDbTrades = await db.getOpenTrades(this.config.userId, false);
         this.openPositionTickers.clear();
+        this.openPositionCityDates.clear();
         for (const trade of openDbTrades) {
-          if (trade.marketTicker) this.openPositionTickers.add(trade.marketTicker);
+          if (trade.marketTicker) {
+            this.openPositionTickers.add(trade.marketTicker);
+            const d = parseDateFromTicker(trade.marketTicker);
+            if (d && trade.cityCode && trade.side) {
+              const key = `${trade.cityCode}:${d}`;
+              if (!this.openPositionCityDates.has(key)) this.openPositionCityDates.set(key, new Set());
+              this.openPositionCityDates.get(key)!.add(trade.side as "yes" | "no");
+            }
+          }
         }
       } catch (_) {
         console.warn(`[WeatherBot] Could not load open live positions from DB — retaining previous position set`);
@@ -396,17 +440,16 @@ export class WeatherBot {
 
     console.log(
       `[WeatherBot] Scan params — ` +
-      `prob_sigma: city.sigma (NWS accuracy) | ` +
-      `MIN_PRICE: ${MIN_PRICE_CENTS}¢ | MIN_BETWEEN_NO_PRICE: ${MIN_BETWEEN_NO_PRICE_CENTS}¢ | ` +
-      `MIN_BETWEEN_SIGMA_DIST: ${MIN_BETWEEN_NO_SIGMA_DIST}σ | MIN_CONVICTION: ${(MIN_CONVICTION * 100).toFixed(0)}% | ` +
+      `prob_sigma: city.sigma (NWS accuracy) | between: ELIMINATED | ` +
+      `MIN_PRICE: ${MIN_PRICE_CENTS}¢ | MIN_CONVICTION: ${(MIN_CONVICTION * 100).toFixed(0)}% | ` +
       `MIN_EDGE: ${(MIN_EDGE * 100).toFixed(0)}% | MIN_EV: ${MIN_EV_CENTS_LOCKED}¢ | ` +
-      `MAX_PRICE: ${MAX_PRICE_CENTS_HARD_CAP}¢ | MAX_STRIKE_SIGMA: 1.0σ`
+      `MAX_PRICE: ${MAX_PRICE_CENTS_HARD_CAP}¢ | YES_SAFETY: ${YES_SAFETY_SIGMA}σ | NO_SAFETY: 1.2σ (1.5σ→90¢ cap)`
     );
     await this.log(
       "info",
-      `Scan params — MIN_PRICE: ${MIN_PRICE_CENTS}¢ | MIN_BETWEEN_NO_PRICE: ${MIN_BETWEEN_NO_PRICE_CENTS}¢ | ` +
-      `MIN_BETWEEN_SIGMA_DIST: ${MIN_BETWEEN_NO_SIGMA_DIST}σ | MIN_CONVICTION: ${(MIN_CONVICTION * 100).toFixed(0)}% | ` +
-      `MIN_EDGE: ${(MIN_EDGE * 100).toFixed(0)}% | MIN_EV: ${MIN_EV_CENTS_LOCKED}¢ | MAX_PRICE: ${MAX_PRICE_CENTS_HARD_CAP}¢`
+      `Scan params — between: ELIMINATED | MIN_PRICE: ${MIN_PRICE_CENTS}¢ | MIN_CONVICTION: ${(MIN_CONVICTION * 100).toFixed(0)}% | ` +
+      `MIN_EDGE: ${(MIN_EDGE * 100).toFixed(0)}% | MIN_EV: ${MIN_EV_CENTS_LOCKED}¢ | MAX_PRICE: ${MAX_PRICE_CENTS_HARD_CAP}¢ | ` +
+      `YES_SAFETY: ${YES_SAFETY_SIGMA}σ | NO_SAFETY: 1.2σ (1.5σ→90¢ cap)`
     );
 
     this.checkDailyReset();
@@ -538,10 +581,17 @@ export class WeatherBot {
             isPaper: true,
             evCents: signal.ev,
             ourProb: signal.ourProb,
+            forecastTemp: signal.forecastTemp ?? null,
           });
           this.dailyTradeCount++;
           // Mark ticker as held so we don't re-enter this market in future scans
           this.openPositionTickers.add(signal.ticker);
+          const sigDate = parseDateFromTicker(signal.ticker);
+          if (sigDate && signal.cityCode) {
+            const key = `${signal.cityCode}:${sigDate}`;
+            if (!this.openPositionCityDates.has(key)) this.openPositionCityDates.set(key, new Set());
+            this.openPositionCityDates.get(key)!.add(signal.side);
+          }
           const paperMsg = `[PAPER] Trade recorded: ${signal.cityName} ${signal.side.toUpperCase()} ${signal.strikeDesc} @ ${signal.priceCents}¢ x${signal.contracts} | EV: +${signal.ev.toFixed(1)}¢ | edge: ${((signal.ourProb - signal.marketProb) * 100).toFixed(1)}% | forecast: ${signal.forecastTemp}°F`;
           console.log(`[WeatherBot] ${paperMsg}`);
           await this.log("trade", paperMsg);
@@ -585,39 +635,34 @@ export class WeatherBot {
 
     // ── Multi-model ensemble (Open-Meteo: ECMWF + GFS + best_match) ──────────
     // Fetch in parallel with market data; degrade gracefully if unavailable.
-    const [ensembleResult, tomorrowEnsembleResult, marketsResult] = await Promise.allSettled([
+    const [ensembleResult, tomorrowEnsembleResult, dayPlusTwoEnsembleResult, marketsResult, lowMarketsResult] = await Promise.allSettled([
       getEnsembleForecast(city.lat, city.lon, forecast.forecastDate, city.timezone),
       forecast.tomorrowHighTemp != null
         ? getEnsembleForecast(city.lat, city.lon, forecast.tomorrowForecastDate, city.timezone)
         : Promise.resolve(null),
-      this.kalshi.getMarkets({ series_ticker: city.seriesTicker, status: "open", limit: 20 }),
+      forecast.dayPlusTwoHighTemp != null
+        ? getEnsembleForecast(city.lat, city.lon, forecast.dayPlusTwoDate, city.timezone)
+        : Promise.resolve(null),
+      this.kalshi.getMarkets({ series_ticker: city.seriesTicker, status: "open", limit: 25 }),
+      city.lowSeriesTicker
+        ? this.kalshi.getMarkets({ series_ticker: city.lowSeriesTicker, status: "open", limit: 25 })
+        : Promise.resolve({ markets: [] }),
     ]);
 
-    const ensemble         = ensembleResult.status         === "fulfilled" ? ensembleResult.value         : null;
-    const tomorrowEnsemble = tomorrowEnsembleResult.status === "fulfilled" ? tomorrowEnsembleResult.value : null;
-    const markets          = marketsResult.status          === "fulfilled" ? marketsResult.value.markets  : [];
+    const ensemble           = ensembleResult.status           === "fulfilled" ? ensembleResult.value           : null;
+    const tomorrowEnsemble   = tomorrowEnsembleResult.status   === "fulfilled" ? tomorrowEnsembleResult.value   : null;
+    const dayPlusTwoEnsemble = dayPlusTwoEnsembleResult.status === "fulfilled" ? dayPlusTwoEnsembleResult.value : null;
+    const markets            = marketsResult.status            === "fulfilled" ? marketsResult.value.markets    : [];
+    const lowMarkets         = lowMarketsResult.status         === "fulfilled" ? lowMarketsResult.value.markets : [];
 
     if (marketsResult.status === "rejected") {
       console.warn(`[WeatherBot] Failed to fetch markets for ${city.code}: ${(marketsResult.reason as any)?.message}`);
-    }
-
-    // Model spread guard: if ECMWF and GFS disagree strongly, skip this city today.
-    // A spread > 6°F means the atmosphere is chaotic and neither model is reliable.
-    if (ensemble && ensemble.modelCount >= 2 && ensemble.spread > 6) {
-      console.log(`[WeatherBot] ${city.code} — ensemble spread ${ensemble.spread}°F > 6°F, models disagree — skipping`);
-      await this.log("warning", `${city.name} — ensemble spread ${ensemble.spread.toFixed(1)}°F > 6°F, models disagree — skipping city this scan`);
-      return signals;
     }
 
     if (markets.length === 0) {
       console.warn(`[WeatherBot] ${city.code} — no open markets found (series: ${city.seriesTicker})`);
       return signals;
     }
-
-    // Blending, bias, and regime are computed per-market inside the loop
-    // so that today's and tomorrow's markets each use the correct forecast date.
-    const currentMonth = new Date().getMonth();
-    const monthlyNormal = city.monthlyNormals[currentMonth];
 
     const effectiveEvThreshold = evThreshold;
     const effectiveMaxPrice = MAX_PRICE_CENTS_HARD_CAP;
@@ -635,6 +680,11 @@ export class WeatherBot {
       const liquidity = oi > 0 ? oi : vol;
 
       if (!["greater", "less", "between"].includes(strikeType)) continue;
+      // ── Sim 6: between bets eliminated permanently ──
+      // Between bets (1°F range) have structural failure: even at 2σ from forecast,
+      // the range has ~4-5% chance of being hit by routine forecast error. Model
+      // overconfidence (97% ourProb → real WR ~40-50%) confirmed in both sim 4 and sim 5.
+      if (strikeType === "between") continue;
 
       // ── Per-market forecast date alignment ────────────────────────────────
       // Determine which calendar date this market settles on.
@@ -650,18 +700,19 @@ export class WeatherBot {
       const settlementDate = parseDateFromTicker(market.ticker) ?? forecast.forecastDate;
       const isToday    = settlementDate === forecast.forecastDate;
       const isTomorrow = settlementDate === forecast.tomorrowForecastDate;
-      if (!isToday && !isTomorrow) {
+      const isDay2     = settlementDate === forecast.dayPlusTwoDate && forecast.dayPlusTwoHighTemp != null;
+      if (!isToday && !isTomorrow && !isDay2) {
         console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: settles ${settlementDate}, no forecast available`);
         continue;
       }
-      // Skip tomorrow markets when NWS hasn't published a tomorrow forecast yet.
-      // Using today's temp for a tomorrow market causes 10°F+ errors in spring/fall transition.
       if (isTomorrow && forecast.tomorrowHighTemp == null) {
         console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: tomorrow market but no NWS tomorrow forecast yet`);
         continue;
       }
-      const marketNwsRaw = isToday ? nwsTemp : forecast.tomorrowHighTemp!;
-      const marketEns    = isToday ? ensemble : tomorrowEnsemble;
+      const marketNwsRaw = isToday ? nwsTemp : isTomorrow ? forecast.tomorrowHighTemp! : forecast.dayPlusTwoHighTemp!;
+      const marketEns    = isToday ? ensemble : isTomorrow ? tomorrowEnsemble : dayPlusTwoEnsemble;
+      // Day+2 forecasts carry more uncertainty — widen sigma by 30% to account for longer horizon
+      const marketSigma  = isDay2 ? city.sigma * 1.3 : city.sigma;
       let marketForecastTemp: number;
       if (marketEns && marketEns.modelCount >= 2) {
         marketForecastTemp = marketNwsRaw * 0.40 + marketEns.consensus * 0.60;
@@ -669,42 +720,28 @@ export class WeatherBot {
         marketForecastTemp = marketNwsRaw;
       }
       const marketBiasedForecast = marketForecastTemp + city.directionBias;
-      const marketRegimeDelta    = marketBiasedForecast - monthlyNormal;
-      const marketRegime: "cold" | "warm" | "neutral" =
-        marketRegimeDelta < -8 ? "cold" : marketRegimeDelta > 8 ? "warm" : "neutral";
-      // ─────────────────────────────────────────────────────────────────────
 
-      // ── Strike distance guard ──
-      // Skip markets where the strike is too far from our blended forecast.
-      // Deep OTM contracts have huge probability sensitivity to forecast error —
-      // a 2°F model miss on a 1.5σ-away strike can flip our edge from positive to negative.
-      // Root cause of the BOS >51°F (1.21σ) and DC >56°F (1.21σ) bad trades.
-      const MAX_STRIKE_SIGMA = 1.0; // skip if strike more than 1 sigma from forecast
-      let strikeDistance = 0;
-      if (strikeType === "greater" && floor !== null) {
-        strikeDistance = (floor - marketBiasedForecast) / city.sigma;
-      } else if (strikeType === "less" && cap !== null) {
-        strikeDistance = (marketBiasedForecast - cap) / city.sigma;
-      }
-      if (strikeDistance > MAX_STRIKE_SIGMA) {
-        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: strike ${strikeDistance.toFixed(2)}σ from forecast (max ${MAX_STRIKE_SIGMA}σ)`);
-        continue;
-      }
-
-      // ── Between-NO distance guard ──
-      // For "between" markets, only bet NO when the range midpoint is clearly
-      // far from our forecast. A 1°F range within 1.5σ of forecast has real
-      // probability of being hit by any routine model error.
-      // Sim4: all between-NO losses at 50-55¢ NO had range within ~1.2σ of forecast;
-      // winning between-NO bets had range ≥1.5σ away.
-      if (strikeType === "between" && floor !== null && cap !== null) {
-        const rangeMidpoint = (floor + cap) / 2;
-        const betweenDist = Math.abs(marketBiasedForecast - rangeMidpoint) / city.sigma;
-        if (betweenDist < MIN_BETWEEN_NO_SIGMA_DIST) {
-          console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: between range ${betweenDist.toFixed(2)}σ from forecast (min ${MIN_BETWEEN_NO_SIGMA_DIST}σ)`);
-          continue;
+      // ── NWS vs ensemble divergence — soft confidence reducer ──
+      // Instead of hard-blocking, large divergence blends ourProb toward 0.5,
+      // reducing edge/EV on uncertain signals without fully excluding them.
+      // Ramp: 0% penalty at ≤2°F → 25% blend toward 0.5 at ≥6°F divergence.
+      // Strong signals still pass; marginal ones get washed out naturally.
+      let divergenceBlend = 0;
+      let nwsEnsDivergence = 0;
+      if (marketEns && marketEns.modelCount >= 2) {
+        nwsEnsDivergence = Math.abs(marketNwsRaw - marketForecastTemp);
+        if (nwsEnsDivergence > 2.0) {
+          divergenceBlend = Math.min(0.25, 0.25 * (nwsEnsDivergence - 2.0) / 4.0);
         }
       }
+
+      // ── Directional safety margins (sim 6) ──
+      // Computed per-side below inside each YES/NO evaluation block.
+      // YES bets require forecast to be on the favorable side by ≥0.5σ.
+      // NO bets require forecast to be well away from the strike by ≥1.5σ.
+      // This replaces the old symmetric MAX_STRIKE_SIGMA=1.0 guard which
+      // blocked trades regardless of direction (e.g. it blocked NO on >X
+      // where strike is safely far ABOVE forecast — exactly the good NO bets).
 
       // ── Pre-probability guards ──
       if (liquidity > 0 && liquidity < MIN_LIQUIDITY_LOCKED) {
@@ -720,33 +757,52 @@ export class WeatherBot {
         console.log(`[WeatherBot]   ${city.code} ${strikeLabel} — skip: already held`);
         continue;
       }
+      const cityDateKey = `${city.code}:${settlementDate}`;
       if (strikeType === "between" && city.sigmaMkt > 5.0 && windowType === "low-freq") continue;
 
       // Use city.sigma (actual NWS forecast accuracy) — NOT sigmaMkt (market-implied vol).
       // sigmaMkt is ~70% wider than sigma; using it inflates deep-OTM probabilities by 2x,
       // creating fake edges on cheap contracts (e.g., 24% vs true ~11% for BOS >51°F @ 5¢).
-      const ourProb = probForStrike(marketBiasedForecast, city.sigma, floor, cap, strikeType);
+      // Apply divergence penalty: blend toward 0.5 when NWS and ensemble disagree.
+      const ourProbRaw = probForStrike(marketBiasedForecast, marketSigma, floor, cap, strikeType);
+      const ourProb    = divergenceBlend > 0
+        ? ourProbRaw * (1 - divergenceBlend) + 0.5 * divergenceBlend
+        : ourProbRaw;
 
       // ── YES side ──
       const yesAsk        = market.yes_ask;
-      const yesIsWarmBet  = strikeType === "greater";
-      const yesRegimeOk   = !(marketRegime === "cold" && yesIsWarmBet) && !(marketRegime === "warm" && !yesIsWarmBet && strikeType === "less");
       const yesMarketProb = yesAsk / 100;
       const yesEdge       = ourProb - yesMarketProb;
       const yesEV         = calcEV(ourProb, yesAsk);
+
+      // Directional safety for YES: forecast must be ≥ YES_SAFETY_SIGMA past the strike (module-level).
+      // YES >X (greater): need forecast ≥ floor → safety = (forecast - floor) / σ ≥ 0.5
+      // YES <X (less):    need forecast ≤ cap  → safety = (cap - forecast)   / σ ≥ 0.5
+      // 0.5σ means forecast must be half a sigma past the strike — not just barely on the right side.
+      // This buffers against ensemble flips (BOS mid-run: safety was only 0.02σ when bet placed).
+      let yesSafety = 0;
+      if (strikeType === "greater" && floor !== null) {
+        yesSafety = (marketBiasedForecast - floor) / marketSigma;
+      } else if (strikeType === "less" && cap !== null) {
+        yesSafety = (cap - marketBiasedForecast) / marketSigma;
+      }
+      const yesSafetyOk = yesSafety >= YES_SAFETY_SIGMA;
 
       {
         const reasons: string[] = [];
         if (ourProb < MIN_CONVICTION)          reasons.push(`conv ${(ourProb*100).toFixed(0)}%<${(MIN_CONVICTION*100).toFixed(0)}%`);
         if (yesEdge < MIN_EDGE)                reasons.push(`edge ${(yesEdge*100).toFixed(1)}%<${(MIN_EDGE*100).toFixed(0)}%`);
-        if (!yesRegimeOk)                      reasons.push(`regime(${marketRegime})`);
+        if (!yesSafetyOk)                      reasons.push(`dir-safety ${yesSafety.toFixed(2)}σ<${YES_SAFETY_SIGMA}σ`);
         if (yesAsk < MIN_PRICE_CENTS)          reasons.push(`price ${yesAsk}¢<min`);
         if (yesAsk > effectiveMaxPrice)        reasons.push(`price ${yesAsk}¢>cap`);
         if (reasons.length === 0 && yesEV < effectiveEvThreshold) reasons.push(`EV ${yesEV.toFixed(1)}¢<${effectiveEvThreshold}¢`);
-        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} YES@${yesAsk}¢ | ourP=${(ourProb*100).toFixed(0)}% mktP=${(yesMarketProb*100).toFixed(0)}% edge=${(yesEdge*100).toFixed(1)}% EV=${yesEV.toFixed(1)}¢${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
+        const divTag = divergenceBlend > 0 ? ` divAdj=${(ourProbRaw*100).toFixed(0)}%→${(ourProb*100).toFixed(0)}%(${(divergenceBlend*100).toFixed(0)}%pen@${nwsEnsDivergence.toFixed(1)}°F)` : "";
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} YES@${yesAsk}¢ | ourP=${(ourProb*100).toFixed(0)}% mktP=${(yesMarketProb*100).toFixed(0)}% edge=${(yesEdge*100).toFixed(1)}% EV=${yesEV.toFixed(1)}¢ safety=${yesSafety.toFixed(2)}σ nws=${marketNwsRaw}°F${divTag}${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
       }
 
-      if (ourProb >= MIN_CONVICTION && yesEdge >= MIN_EDGE && yesRegimeOk && yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice && yesEV >= effectiveEvThreshold) {
+      if (this.openPositionCityDates.get(cityDateKey)?.has("no")) {
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} YES — skip: would hedge existing NO position (conflict guard)`);
+      } else if (ourProb >= MIN_CONVICTION && yesEdge >= MIN_EDGE && yesSafetyOk && yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice && yesEV >= effectiveEvThreshold) {
         const confScale  = Math.min(1.5, Math.max(0.5, (ourProb - 0.50) / 0.25));
         const contracts  = Math.max(1, Math.floor((this.config.flatBetDollars * confScale) / (yesAsk / 100)));
         const winProfit  = contracts * (100 - yesAsk) * (1 - KALSHI_FEE_RATE) / 100;
@@ -766,29 +822,40 @@ export class WeatherBot {
       const noAsk        = market.no_ask;
       const noProb       = 1 - ourProb;
       const noMarketProb = noAsk / 100;
-      const noIsWarmBet  = strikeType === "less";
-      // NO-side regime filter: only block NO on <X in cold regime (betting warm when it's cold).
-      // Previously also blocked NO on >X in warm regime, but that's double-counting — the warm
-      // conditions are already baked into the blended forecast. The strike distance guard (1.0σ)
-      // and 70% conviction threshold provide sufficient protection without this extra restriction.
-      const noRegimeOk   = !(marketRegime === "cold" && noIsWarmBet);
       const noEdge       = noProb - noMarketProb;
       const noEV         = calcEV(noProb, noAsk);
 
+      // Directional safety for NO: strike must be well away from forecast in the favorable direction by ≥1.5σ.
+      // NO >X (greater): we bet it won't exceed floor. Need floor safely above forecast.
+      //   safety = (floor - forecast) / σ — positive means floor is above forecast (good)
+      // NO <X (less): we bet it won't fall below cap. Need cap safely below forecast.
+      //   safety = (forecast - cap) / σ — positive means forecast is above cap (good)
+      const NO_SAFETY_SIGMA = 1.2;
+      let noSafety = 0;
+      if (strikeType === "greater" && floor !== null) {
+        noSafety = (floor - marketBiasedForecast) / marketSigma;
+      } else if (strikeType === "less" && cap !== null) {
+        noSafety = (marketBiasedForecast - cap) / marketSigma;
+      }
+      const noSafetyOk = noSafety >= NO_SAFETY_SIGMA;
+
       {
+        const noMaxPrice = noSafety >= 1.5 ? NO_HIGH_CONF_MAX_PRICE_CENTS : effectiveMaxPrice;
         const reasons: string[] = [];
         if (noProb < MIN_CONVICTION)           reasons.push(`conv ${(noProb*100).toFixed(0)}%<${(MIN_CONVICTION*100).toFixed(0)}%`);
         if (noEdge < MIN_EDGE)                 reasons.push(`edge ${(noEdge*100).toFixed(1)}%<${(MIN_EDGE*100).toFixed(0)}%`);
-        if (!noRegimeOk)                       reasons.push(`regime(${marketRegime})`);
+        if (!noSafetyOk)                       reasons.push(`dir-safety ${noSafety.toFixed(2)}σ<${NO_SAFETY_SIGMA}σ`);
         if (noAsk < MIN_PRICE_CENTS)           reasons.push(`price ${noAsk}¢<min`);
-        if (strikeType === "between" && noAsk < MIN_BETWEEN_NO_PRICE_CENTS) reasons.push(`between-NO ${noAsk}¢<min${MIN_BETWEEN_NO_PRICE_CENTS}¢`);
-        if (noAsk > effectiveMaxPrice)         reasons.push(`price ${noAsk}¢>cap`);
+        if (noAsk > noMaxPrice)                reasons.push(`price ${noAsk}¢>cap(${noMaxPrice}¢)`);
         if (reasons.length === 0 && noEV < effectiveEvThreshold) reasons.push(`EV ${noEV.toFixed(1)}¢<${effectiveEvThreshold}¢`);
-        console.log(`[WeatherBot]   ${city.code} ${strikeLabel}  NO@${noAsk}¢ | ourP=${(noProb*100).toFixed(0)}% mktP=${(noMarketProb*100).toFixed(0)}% edge=${(noEdge*100).toFixed(1)}% EV=${noEV.toFixed(1)}¢${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
+        const noRawProb = 1 - ourProbRaw;
+        const noDivTag = divergenceBlend > 0 ? ` divAdj=${(noRawProb*100).toFixed(0)}%→${(noProb*100).toFixed(0)}%(${(divergenceBlend*100).toFixed(0)}%pen@${nwsEnsDivergence.toFixed(1)}°F)` : "";
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel}  NO@${noAsk}¢ | ourP=${(noProb*100).toFixed(0)}% mktP=${(noMarketProb*100).toFixed(0)}% edge=${(noEdge*100).toFixed(1)}% EV=${noEV.toFixed(1)}¢ safety=${noSafety.toFixed(2)}σ${noDivTag}${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
       }
 
-      const noBetweenPriceOk = strikeType !== "between" || noAsk >= MIN_BETWEEN_NO_PRICE_CENTS;
-      if (noProb >= MIN_CONVICTION && noEdge >= MIN_EDGE && noRegimeOk && noAsk >= MIN_PRICE_CENTS && noBetweenPriceOk && noAsk <= effectiveMaxPrice && noEV >= effectiveEvThreshold) {
+      if (this.openPositionCityDates.get(cityDateKey)?.has("yes")) {
+        console.log(`[WeatherBot]   ${city.code} ${strikeLabel}  NO — skip: would hedge existing YES position (conflict guard)`);
+      } else if (noProb >= MIN_CONVICTION && noEdge >= MIN_EDGE && noSafetyOk && noAsk >= MIN_PRICE_CENTS && noAsk <= (noSafety >= 1.5 ? NO_HIGH_CONF_MAX_PRICE_CENTS : effectiveMaxPrice) && noEV >= effectiveEvThreshold) {
         const confScale  = Math.min(1.5, Math.max(0.5, (noProb - 0.50) / 0.25));
         const contracts  = Math.max(1, Math.floor((this.config.flatBetDollars * confScale) / (noAsk / 100)));
         const winProfit  = contracts * (100 - noAsk) * (1 - KALSHI_FEE_RATE) / 100;
@@ -801,6 +868,100 @@ export class WeatherBot {
             strikeDesc: strikeLabel, strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
             windowType,
           });
+        }
+      }
+    }
+
+    // ── KXLOW markets (overnight low temperature) ──────────────────────────────
+    // Scan low-temperature series if city has a lowSeriesTicker and markets are available.
+    // Uses overnight low forecast + sigmaLow (defaults to sigma * 1.15).
+    if (city.lowSeriesTicker && lowMarkets.length > 0) {
+      const sigmaLow = city.sigmaLow ?? city.sigma * 1.15;
+      const todayLow    = forecast.lowTemp;
+      const tomorrowLow = forecast.tomorrowLowTemp;
+      console.log(`[WeatherBot] ${city.code} LOW — ${lowMarkets.length} markets | NWS low today ${todayLow}°F${tomorrowLow != null ? ` / tomorrow ${tomorrowLow}°F` : ""} | σ=${sigmaLow.toFixed(1)}°F`);
+
+      for (const market of lowMarkets) {
+        const floor      = market.floor_strike ?? null;
+        const cap        = market.cap_strike ?? null;
+        const strikeType = market.strike_type ?? "between";
+        if (strikeType === "between" || !["greater", "less"].includes(strikeType)) continue;
+
+        const strikeLabel    = this.strikeDesc(floor, cap, strikeType);
+        const oi             = market.open_interest ?? 0;
+        const vol            = market.volume ?? 0;
+        const liquidity      = oi > 0 ? oi : vol;
+        const settlementDate = parseDateFromTicker(market.ticker) ?? forecast.forecastDate;
+        const isToday        = settlementDate === forecast.forecastDate;
+        const isTomorrow     = settlementDate === forecast.tomorrowForecastDate;
+        if (!isToday && !isTomorrow) continue;
+        if (isTomorrow && tomorrowLow == null) continue;
+
+        const lowNwsRaw         = isToday ? todayLow : tomorrowLow!;
+        const lowBiasedForecast = lowNwsRaw + city.directionBias;
+
+        if (liquidity > 0 && liquidity < MIN_LIQUIDITY_LOCKED) continue;
+        const minsLeft = minutesToClose(market);
+        if (minsLeft < MIN_MINUTES_TO_CLOSE) continue;
+        if (this.openPositionTickers.has(market.ticker)) continue;
+        const cityDateKey = `${city.code}:${settlementDate}:low`;
+
+        const lowProb    = probForStrike(lowBiasedForecast, sigmaLow, floor, cap, strikeType);
+        const yesAsk     = market.yes_ask;
+        const yesEdge    = lowProb - yesAsk / 100;
+        const yesEV      = calcEV(lowProb, yesAsk);
+        let yesSafety    = 0;
+        if (strikeType === "greater" && floor !== null) yesSafety = (lowBiasedForecast - floor) / sigmaLow;
+        else if (strikeType === "less" && cap !== null) yesSafety = (cap - lowBiasedForecast) / sigmaLow;
+        const yesSafetyOk = yesSafety >= YES_SAFETY_SIGMA;
+
+        console.log(`[WeatherBot]   ${city.code} LOW ${strikeLabel} YES@${yesAsk}¢ | ourP=${(lowProb*100).toFixed(0)}% edge=${(yesEdge*100).toFixed(1)}% EV=${yesEV.toFixed(1)}¢ safety=${yesSafety.toFixed(2)}σ nws=${lowNwsRaw}°F${lowProb >= MIN_CONVICTION && yesEdge >= MIN_EDGE && yesSafetyOk && yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice && yesEV >= effectiveEvThreshold ? " — ✓ PASS" : " — SKIP"}`);
+
+        if (this.openPositionCityDates.get(cityDateKey)?.has("no")) {
+          console.log(`[WeatherBot]   ${city.code} LOW ${strikeLabel} YES — skip: would hedge existing NO position (conflict guard)`);
+        } else if (lowProb >= MIN_CONVICTION && yesEdge >= MIN_EDGE && yesSafetyOk && yesAsk >= MIN_PRICE_CENTS && yesAsk <= effectiveMaxPrice && yesEV >= effectiveEvThreshold) {
+          const confScale = Math.min(1.5, Math.max(0.5, (lowProb - 0.50) / 0.25));
+          const contracts = Math.max(1, Math.floor((this.config.flatBetDollars * confScale) / (yesAsk / 100)));
+          const winProfit = contracts * (100 - yesAsk) * (1 - KALSHI_FEE_RATE) / 100;
+          if (winProfit >= minWinProfit) {
+            const confidence = signalConfidence(lowProb, yesAsk / 100, yesEV, forecast.forecastAgeMinutes);
+            signals.push({
+              cityCode: city.code, cityName: city.name, ticker: market.ticker,
+              side: "yes", priceCents: yesAsk, ourProb: lowProb, marketProb: yesAsk / 100, ev: yesEV, confidence,
+              contracts, forecastTemp: lowBiasedForecast, hourlyHighTemp: forecast.hourlyHighTemp,
+              strikeDesc: strikeLabel, strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
+              windowType,
+            });
+          }
+        }
+
+        const noAsk    = market.no_ask;
+        const noProb   = 1 - lowProb;
+        const noEdge   = noProb - noAsk / 100;
+        const noEV     = calcEV(noProb, noAsk);
+        const NO_SAFETY_SIGMA_LOW = 1.2;
+        let noSafety   = 0;
+        if (strikeType === "greater" && floor !== null) noSafety = (floor - lowBiasedForecast) / sigmaLow;
+        else if (strikeType === "less" && cap !== null) noSafety = (lowBiasedForecast - cap) / sigmaLow;
+        const noSafetyOk  = noSafety >= NO_SAFETY_SIGMA_LOW;
+        const noMaxPrice  = noSafety >= 1.5 ? NO_HIGH_CONF_MAX_PRICE_CENTS : effectiveMaxPrice;
+
+        if (this.openPositionCityDates.get(cityDateKey)?.has("yes")) {
+          console.log(`[WeatherBot]   ${city.code} LOW ${strikeLabel}  NO — skip: would hedge existing YES position (conflict guard)`);
+        } else if (noProb >= MIN_CONVICTION && noEdge >= MIN_EDGE && noSafetyOk && noAsk >= MIN_PRICE_CENTS && noAsk <= noMaxPrice && noEV >= effectiveEvThreshold) {
+          const confScale = Math.min(1.5, Math.max(0.5, (noProb - 0.50) / 0.25));
+          const contracts = Math.max(1, Math.floor((this.config.flatBetDollars * confScale) / (noAsk / 100)));
+          const winProfit = contracts * (100 - noAsk) * (1 - KALSHI_FEE_RATE) / 100;
+          if (winProfit >= minWinProfit) {
+            const confidence = signalConfidence(noProb, noAsk / 100, noEV, forecast.forecastAgeMinutes);
+            signals.push({
+              cityCode: city.code, cityName: city.name, ticker: market.ticker,
+              side: "no", priceCents: noAsk, ourProb: noProb, marketProb: noAsk / 100, ev: noEV, confidence,
+              contracts, forecastTemp: lowBiasedForecast, hourlyHighTemp: forecast.hourlyHighTemp,
+              strikeDesc: strikeLabel, strikeType, forecastAgeMinutes: forecast.forecastAgeMinutes,
+              windowType,
+            });
+          }
         }
       }
     }
@@ -846,6 +1007,12 @@ export class WeatherBot {
 
       // Mark this ticker as held so we don't re-enter same market this session
       this.openPositionTickers.add(signal.ticker);
+      const sigDate = parseDateFromTicker(signal.ticker);
+      if (sigDate && signal.cityCode) {
+        const key = `${signal.cityCode}:${sigDate}`;
+        if (!this.openPositionCityDates.has(key)) this.openPositionCityDates.set(key, new Set());
+        this.openPositionCityDates.get(key)!.add(signal.side);
+      }
 
       // Normalize Kalshi order status to our DB enum ('pending','filled','cancelled','settled')
       // Kalshi returns: 'resting', 'executed', 'canceled', 'pending', 'open'
@@ -873,6 +1040,7 @@ export class WeatherBot {
         isPaper: false,
         evCents: signal.ev,
         ourProb: signal.ourProb,
+        forecastTemp: signal.forecastTemp ?? null,
       });
 
       const msg =

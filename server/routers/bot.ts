@@ -203,6 +203,50 @@ export const botRouter = router({
     return Object.values(CITIES).map(({ code, name, seriesTicker }) => ({ code, name, seriesTicker }));
   }),
 
+  // ─── Discover Kalshi Weather Series ────────────────────────────────────────
+  // Queries Kalshi directly to find all series tickers that look like weather
+  // markets (KXHIGH prefix). Use this to verify/find correct tickers for new cities.
+  discoverWeatherSeries: protectedProcedure.query(async ({ ctx }) => {
+    const userId = ctx.user.id;
+    const config = await db.getBotConfig(userId);
+    if (!config?.kalshiApiKey) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Kalshi API key not configured." });
+    }
+    const { KalshiClient } = await import("../services/kalshiClient");
+    const kalshi = new KalshiClient(config.kalshiApiKey, config.kalshiKeyId ?? undefined);
+
+    // Paginate through all series (Kalshi returns max 200 per page)
+    const allSeries: any[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const res = await kalshi.getSeries({ limit: 200, cursor });
+      const batch = res.series ?? [];
+      allSeries.push(...batch);
+      // Kalshi may return cursor as `cursor` or `next_cursor`
+      cursor = res.cursor ?? (res as any).next_cursor;
+      pages++;
+      // Safety: stop after 20 pages (4000 series)
+      if (pages >= 20) break;
+    } while (cursor);
+
+    // Filter to temperature/weather series (KXHIGH* and KXLOW* prefixes,
+    // excluding non-weather: KXHIGHMOV*, KXHIGHINFLATION)
+    const weather = allSeries.filter((s: any) => {
+      const t = (s.ticker ?? s.series_ticker ?? "").toUpperCase();
+      if (t.startsWith("KXHIGHMOV") || t === "KXHIGHINFLATION") return false;
+      return t.startsWith("KXHIGH") || t.startsWith("KXLOWT");
+    });
+
+    return weather.map((s: any) => ({
+      ticker:   s.ticker ?? s.series_ticker ?? "",
+      title:    s.title ?? s.category ?? "",
+      category: s.category ?? "",
+      status:   s.status ?? "",
+      type:     (s.ticker ?? s.series_ticker ?? "").toUpperCase().startsWith("KXLOWT") ? "low" : "high",
+    }));
+  }),
+
   // ─── City Stats ────────────────────────────────────────────────────────────
   getCityStats: protectedProcedure.query(async ({ ctx }) => {
     return db.getCityStats(ctx.user.id);

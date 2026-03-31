@@ -216,6 +216,19 @@ export class KalshiClient {
     return this.get("/portfolio/settlements", params);
   }
 
+  /**
+   * List all Kalshi series, optionally filtered by category.
+   * Used to discover the correct series_ticker values for new cities.
+   */
+  async getSeries(params?: {
+    limit?: number;
+    cursor?: string;
+    category?: string;
+    status?: string;
+  }): Promise<{ series: any[]; cursor?: string }> {
+    return this.get<{ series: any[]; cursor?: string }>("/series", params);
+  }
+
   isConfigured(): boolean {
     return !!this.privateKeyPem && !!this.keyId;
   }

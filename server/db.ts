@@ -111,6 +111,7 @@ export type Trade = {
   isPaper: boolean;
   evCents: number | null;
   ourProb: number | null;
+  forecastTemp: number | null;  // blended forecast (NWS×40% + ensemble×60% + bias) at trade entry
 };
 
 export type NewTrade = Omit<Trade, "id" | "createdAt" | "costBasis"> & { costBasis?: string };
@@ -361,6 +362,7 @@ function mapTrade(row: any): Trade {
     isPaper: row.is_paper == 1 || row.is_paper === true,
     evCents: row.ev != null ? Number(row.ev) : null,
     ourProb: row.our_prob != null ? Number(row.our_prob) : null,
+    forecastTemp: row.forecast_temp != null ? Number(row.forecast_temp) : null,
   };
 }
 
@@ -385,9 +387,9 @@ export async function insertTrade(data: NewTrade & { isPaper?: boolean }): Promi
   const costBasis = String((data.priceCents / 100) * data.contracts);
   const status = normalizeTradeStatus(data.status);
   const result = await exec(
-    `INSERT INTO trades_v2 (user_id, order_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status, strike_desc, is_paper, ev, our_prob)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.userId, data.kalshiOrderId ?? null, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, status, data.strikeDesc ?? null, data.isPaper ? 1 : 0, data.evCents ?? null, data.ourProb ?? null]
+    `INSERT INTO trades_v2 (user_id, order_id, market_ticker, city_code, city_name, side, contracts, price_cents, cost_basis, status, strike_desc, is_paper, ev, our_prob, forecast_temp)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [data.userId, data.kalshiOrderId ?? null, data.marketTicker, data.cityCode, data.cityName, data.side, data.contracts, data.priceCents, costBasis, status, data.strikeDesc ?? null, data.isPaper ? 1 : 0, data.evCents ?? null, data.ourProb ?? null, data.forecastTemp ?? null]
   );
   return result.insertId;
 }
@@ -667,6 +669,7 @@ export async function getLatestForecasts() {
     windDirection: r.wind_direction ?? null,
     precipChance: r.precip_chance != null ? Number(r.precip_chance) : null,
     updatedAt: r.fetched_at,
+    forecastDate: r.forecast_date ?? null,
     tomorrowHigh: r.tomorrow_high != null ? Number(r.tomorrow_high) : null,
     tomorrowForecastDate: r.tomorrow_forecast_date ?? null,
   }));

@@ -7,7 +7,9 @@ export interface CityConfig {
   name: string;
   stationId: string;
   seriesTicker: string;
+  lowSeriesTicker?: string; // Kalshi KXLOW series ticker for overnight low markets (populated after discovery)
   sigma: number;        // NWS 1-day forecast error std dev (°F) — calibrated from historical data
+  sigmaLow?: number;    // NWS overnight low forecast error (°F); defaults to sigma * 1.15 if not set
   sigmaMkt: number;     // Typical market implied sigma
   shiftFreq: number;    // Fraction of days with ≥2°F shift after NWS update
   lat: number;
@@ -21,13 +23,16 @@ export interface CityConfig {
 }
 
 // ─── City Config ───────────────────────────────────────────────────────────────
-// seriesTicker values verified against live Kalshi API (2026-03-08).
+// seriesTicker values verified against live Kalshi API (2026-03-08 + 2026-03-29 re-check).
 // AUS was KXHIGHAUSTIN (dead, 0 markets) → fixed to KXHIGHAUS
 // MSY was KXHIGHMSY (dead) → fixed to KXHIGHTNOLA
 // JAX removed: was mapped to KXHIGHMIA (Miami series) — Jacksonville forecast + Miami market = invalid
 // SJC removed: was mapped to KXHIGHTSFO (SF series) — different microclimate, misleading
 // SAN removed: duplicate of SAT (same coords, same series)
 // PHI updated: using KXHIGHPHIL (verified live)
+// SAT re-added (2026-03-29): KXHIGHTSATX confirmed live via discoverWeatherSeries (was incorrectly KXHIGHSATX)
+// KXLOWT series confirmed live (2026-04-01): NYC, CHI, MIA, LAX, AUS, DEN, PHI only — 7 cities total
+// PDX/CLT/TPA/DTW/RDU/BNA: NOT available on Kalshi (confirmed via full series list)
 // ─── City Config ───────────────────────────────────────────────────────────────
 // directionBias derived from analysis of 10,556 settled Kalshi markets (2026-03-10).
 // Method: compare "greater" YES win% vs "less" YES win% per city.
@@ -36,26 +41,36 @@ export interface CityConfig {
 // Ratios:  PHI 12/3.3=3.6x warm | BOS 9.4/3.1=3x | ATL 9.1/0=∞ warm
 //          MSP 6.1/21.2=0.29x cold | DCA 5.9/13.7=0.43x | LAS 0/7.4=0x | AUS 2.2/7.6=0.29x
 export const CITIES: Record<string, CityConfig> = {
-  NYC: { code: "NYC", name: "New York City",   stationId: "KNYC", seriesTicker: "KXHIGHNY",     sigma: 3.2, sigmaMkt: 5.5, shiftFreq: 0.42, lat: 40.7789, lon: -73.9692,  timezone: "America/New_York",    directionBias: -0.5, monthlyNormals: [39,42,50,62,72,81,86,84,76,64,53,43] },
-  CHI: { code: "CHI", name: "Chicago",         stationId: "KMDW", seriesTicker: "KXHIGHCHI",    sigma: 3.8, sigmaMkt: 6.2, shiftFreq: 0.48, lat: 41.7868, lon: -87.7522,  timezone: "America/Chicago",     directionBias:  0.0, monthlyNormals: [32,36,47,60,71,81,85,83,76,63,49,36] },
-  MIA: { code: "MIA", name: "Miami",           stationId: "KMIA", seriesTicker: "KXHIGHMIA",    sigma: 2.1, sigmaMkt: 3.8, shiftFreq: 0.28, lat: 25.7959, lon: -80.2870,  timezone: "America/New_York",    directionBias:  0.5, monthlyNormals: [76,77,81,85,88,90,92,92,90,86,82,78] },
-  LAX: { code: "LAX", name: "Los Angeles",     stationId: "KLAX", seriesTicker: "KXHIGHLAX",    sigma: 2.5, sigmaMkt: 4.2, shiftFreq: 0.32, lat: 33.9425, lon: -118.4081, timezone: "America/Los_Angeles",  directionBias:  0.0, monthlyNormals: [68,70,72,75,79,83,88,89,87,82,74,68] },
-  AUS: { code: "AUS", name: "Austin",          stationId: "KAUS", seriesTicker: "KXHIGHAUS",    sigma: 3.5, sigmaMkt: 5.8, shiftFreq: 0.45, lat: 30.1975, lon: -97.6664,  timezone: "America/Chicago",     directionBias: -1.5, monthlyNormals: [61,65,72,80,86,93,97,97,91,81,70,62] },
-  HOU: { code: "HOU", name: "Houston",         stationId: "KHOU", seriesTicker: "KXHIGHTHOU",   sigma: 3.3, sigmaMkt: 5.5, shiftFreq: 0.44, lat: 29.6454, lon: -95.2789,  timezone: "America/Chicago",     directionBias: -1.5, monthlyNormals: [63,67,74,80,87,93,95,96,91,82,73,65] },
-  BOS: { code: "BOS", name: "Boston",          stationId: "KBOS", seriesTicker: "KXHIGHTBOS",   sigma: 3.4, sigmaMkt: 5.8, shiftFreq: 0.46, lat: 42.3601, lon: -71.0589,  timezone: "America/New_York",    directionBias:  1.5, monthlyNormals: [37,39,47,58,68,78,83,81,74,62,52,41] },
-  SFO: { code: "SFO", name: "San Francisco",   stationId: "KSFO", seriesTicker: "KXHIGHTSFO",   sigma: 2.2, sigmaMkt: 3.9, shiftFreq: 0.30, lat: 37.6213, lon: -122.3790, timezone: "America/Los_Angeles",  directionBias:  0.0, monthlyNormals: [57,61,64,67,69,72,72,73,74,71,63,57] },
-  SEA: { code: "SEA", name: "Seattle",         stationId: "KSEA", seriesTicker: "KXHIGHTSEA",   sigma: 2.8, sigmaMkt: 4.8, shiftFreq: 0.38, lat: 47.4502, lon: -122.3088, timezone: "America/Los_Angeles",  directionBias:  0.0, monthlyNormals: [47,51,56,61,67,72,78,78,72,61,51,45] },
-  OKC: { code: "OKC", name: "Oklahoma City",   stationId: "KOKC", seriesTicker: "KXHIGHTOKC",   sigma: 4.0, sigmaMkt: 6.5, shiftFreq: 0.50, lat: 35.3931, lon: -97.6007,  timezone: "America/Chicago",     directionBias: -1.0, monthlyNormals: [48,53,61,71,79,88,95,94,85,74,61,51] },
-  LAS: { code: "LAS", name: "Las Vegas",       stationId: "KLAS", seriesTicker: "KXHIGHTLV",    sigma: 2.6, sigmaMkt: 4.4, shiftFreq: 0.33, lat: 36.0840, lon: -115.1537, timezone: "America/Los_Angeles",  directionBias: -1.5, monthlyNormals: [58,64,71,80,90,101,107,104,96,83,68,57] },
-  DCA: { code: "DCA", name: "Washington DC",   stationId: "KDCA", seriesTicker: "KXHIGHTDC",    sigma: 3.3, sigmaMkt: 5.6, shiftFreq: 0.43, lat: 38.9072, lon: -77.0369,  timezone: "America/New_York",    directionBias: -1.5, monthlyNormals: [43,47,56,67,77,86,91,89,82,70,58,46] },
-  ATL: { code: "ATL", name: "Atlanta",         stationId: "KATL", seriesTicker: "KXHIGHTATL",   sigma: 3.0, sigmaMkt: 5.1, shiftFreq: 0.40, lat: 33.7490, lon: -84.3880,  timezone: "America/New_York",    directionBias:  2.0, monthlyNormals: [52,57,65,74,81,88,91,90,84,74,64,54] },
-  DAL: { code: "DAL", name: "Dallas",          stationId: "KDAL", seriesTicker: "KXHIGHTDAL",   sigma: 3.6, sigmaMkt: 6.0, shiftFreq: 0.46, lat: 32.7767, lon: -96.7970,  timezone: "America/Chicago",     directionBias:  0.0, monthlyNormals: [57,62,71,79,87,95,99,99,92,81,68,59] },
-  PHX: { code: "PHX", name: "Phoenix",         stationId: "KPHX", seriesTicker: "KXHIGHTPHX",   sigma: 2.4, sigmaMkt: 4.0, shiftFreq: 0.31, lat: 33.4484, lon: -112.0740, timezone: "America/Phoenix",      directionBias:  0.0, monthlyNormals: [68,73,79,87,97,106,106,104,100,89,77,68] },
-  MSP: { code: "MSP", name: "Minneapolis",     stationId: "KMSP", seriesTicker: "KXHIGHTMIN",   sigma: 4.2, sigmaMkt: 6.8, shiftFreq: 0.52, lat: 44.9778, lon: -93.2650,  timezone: "America/Chicago",     directionBias: -2.0, monthlyNormals: [24,29,42,57,70,80,85,82,73,59,42,27] },
-  // SAT (San Antonio) removed — KXHIGHTSATX market unavailable on Kalshi
-  MSY: { code: "MSY", name: "New Orleans",     stationId: "KMSY", seriesTicker: "KXHIGHTNOLA",  sigma: 2.9, sigmaMkt: 4.9, shiftFreq: 0.38, lat: 29.9511, lon: -90.0715,  timezone: "America/Chicago",     directionBias: -0.5, monthlyNormals: [62,65,72,79,86,91,92,92,88,80,71,64] },
-  DEN: { code: "DEN", name: "Denver",          stationId: "KDEN", seriesTicker: "KXHIGHDEN",    sigma: 3.9, sigmaMkt: 6.4, shiftFreq: 0.49, lat: 39.7392, lon: -104.9903, timezone: "America/Denver",       directionBias:  0.0, monthlyNormals: [46,50,58,67,76,87,93,90,81,69,55,46] },
-  PHI: { code: "PHI", name: "Philadelphia",    stationId: "KPHL", seriesTicker: "KXHIGHPHIL",   sigma: 3.3, sigmaMkt: 5.6, shiftFreq: 0.43, lat: 39.9526, lon: -75.1652,  timezone: "America/New_York",    directionBias:  2.0, monthlyNormals: [39,43,52,64,74,83,88,86,79,67,55,43] },
+  NYC: { code: "NYC", name: "New York City",   stationId: "KNYC", seriesTicker: "KXHIGHNY",     lowSeriesTicker: "KXLOWTNYC",  sigma: 3.2, sigmaMkt: 5.5, shiftFreq: 0.42, lat: 40.7789, lon: -73.9692,  timezone: "America/New_York",    directionBias: -0.5, monthlyNormals: [39,42,50,62,72,81,86,84,76,64,53,43] },
+  CHI: { code: "CHI", name: "Chicago",         stationId: "KMDW", seriesTicker: "KXHIGHCHI",    lowSeriesTicker: "KXLOWTCHI",  sigma: 3.8, sigmaMkt: 6.2, shiftFreq: 0.48, lat: 41.7868, lon: -87.7522,  timezone: "America/Chicago",     directionBias:  0.0, monthlyNormals: [32,36,47,60,71,81,85,83,76,63,49,36] },
+  MIA: { code: "MIA", name: "Miami",           stationId: "KMIA", seriesTicker: "KXHIGHMIA",    lowSeriesTicker: "KXLOWTMIA",  sigma: 2.1, sigmaMkt: 3.8, shiftFreq: 0.28, lat: 25.7959, lon: -80.2870,  timezone: "America/New_York",    directionBias:  0.5, monthlyNormals: [76,77,81,85,88,90,92,92,90,86,82,78] },
+  LAX: { code: "LAX", name: "Los Angeles",     stationId: "KLAX", seriesTicker: "KXHIGHLAX",    lowSeriesTicker: "KXLOWTLAX",  sigma: 2.5, sigmaMkt: 4.2, shiftFreq: 0.32, lat: 33.9425, lon: -118.4081, timezone: "America/Los_Angeles",  directionBias:  0.0, monthlyNormals: [68,70,72,75,79,83,88,89,87,82,74,68] },
+  AUS: { code: "AUS", name: "Austin",          stationId: "KAUS", seriesTicker: "KXHIGHAUS",    lowSeriesTicker: "KXLOWTAUS",  sigma: 3.5, sigmaMkt: 5.8, shiftFreq: 0.45, lat: 30.1975, lon: -97.6664,  timezone: "America/Chicago",     directionBias: -1.5, monthlyNormals: [61,65,72,80,86,93,97,97,91,81,70,62] },
+  HOU: { code: "HOU", name: "Houston",         stationId: "KHOU", seriesTicker: "KXHIGHTHOU",                                 sigma: 3.3, sigmaMkt: 5.5, shiftFreq: 0.44, lat: 29.6454, lon: -95.2789,  timezone: "America/Chicago",     directionBias: -1.5, monthlyNormals: [63,67,74,80,87,93,95,96,91,82,73,65] },
+  BOS: { code: "BOS", name: "Boston",          stationId: "KBOS", seriesTicker: "KXHIGHTBOS",                                 sigma: 3.4, sigmaMkt: 5.8, shiftFreq: 0.46, lat: 42.3601, lon: -71.0589,  timezone: "America/New_York",    directionBias:  1.5, monthlyNormals: [37,39,47,58,68,78,83,81,74,62,52,41] },
+  SFO: { code: "SFO", name: "San Francisco",   stationId: "KSFO", seriesTicker: "KXHIGHTSFO",                                 sigma: 2.2, sigmaMkt: 3.9, shiftFreq: 0.30, lat: 37.6213, lon: -122.3790, timezone: "America/Los_Angeles",  directionBias:  0.0, monthlyNormals: [57,61,64,67,69,72,72,73,74,71,63,57] },
+  SEA: { code: "SEA", name: "Seattle",         stationId: "KSEA", seriesTicker: "KXHIGHTSEA",                                 sigma: 2.8, sigmaMkt: 4.8, shiftFreq: 0.38, lat: 47.4502, lon: -122.3088, timezone: "America/Los_Angeles",  directionBias:  0.0, monthlyNormals: [47,51,56,61,67,72,78,78,72,61,51,45] },
+  OKC: { code: "OKC", name: "Oklahoma City",   stationId: "KOKC", seriesTicker: "KXHIGHTOKC",                                 sigma: 4.0, sigmaMkt: 6.5, shiftFreq: 0.50, lat: 35.3931, lon: -97.6007,  timezone: "America/Chicago",     directionBias: -1.0, monthlyNormals: [48,53,61,71,79,88,95,94,85,74,61,51] },
+  LAS: { code: "LAS", name: "Las Vegas",       stationId: "KLAS", seriesTicker: "KXHIGHTLV",                                  sigma: 2.6, sigmaMkt: 4.4, shiftFreq: 0.33, lat: 36.0840, lon: -115.1537, timezone: "America/Los_Angeles",  directionBias: -1.5, monthlyNormals: [58,64,71,80,90,101,107,104,96,83,68,57] },
+  DCA: { code: "DCA", name: "Washington DC",   stationId: "KDCA", seriesTicker: "KXHIGHTDC",                                  sigma: 3.3, sigmaMkt: 5.6, shiftFreq: 0.43, lat: 38.9072, lon: -77.0369,  timezone: "America/New_York",    directionBias: -1.5, monthlyNormals: [43,47,56,67,77,86,91,89,82,70,58,46] },
+  ATL: { code: "ATL", name: "Atlanta",         stationId: "KATL", seriesTicker: "KXHIGHTATL",                                 sigma: 3.0, sigmaMkt: 5.1, shiftFreq: 0.40, lat: 33.7490, lon: -84.3880,  timezone: "America/New_York",    directionBias:  2.0, monthlyNormals: [52,57,65,74,81,88,91,90,84,74,64,54] },
+  DAL: { code: "DAL", name: "Dallas",          stationId: "KDAL", seriesTicker: "KXHIGHTDAL",                                 sigma: 3.6, sigmaMkt: 6.0, shiftFreq: 0.46, lat: 32.7767, lon: -96.7970,  timezone: "America/Chicago",     directionBias:  0.0, monthlyNormals: [57,62,71,79,87,95,99,99,92,81,68,59] },
+  PHX: { code: "PHX", name: "Phoenix",         stationId: "KPHX", seriesTicker: "KXHIGHTPHX",                                 sigma: 2.4, sigmaMkt: 4.0, shiftFreq: 0.31, lat: 33.4484, lon: -112.0740, timezone: "America/Phoenix",      directionBias:  0.0, monthlyNormals: [68,73,79,87,97,106,106,104,100,89,77,68] },
+  MSP: { code: "MSP", name: "Minneapolis",     stationId: "KMSP", seriesTicker: "KXHIGHTMIN",                                 sigma: 4.2, sigmaMkt: 6.8, shiftFreq: 0.52, lat: 44.9778, lon: -93.2650,  timezone: "America/Chicago",     directionBias: -2.0, monthlyNormals: [24,29,42,57,70,80,85,82,73,59,42,27] },
+  SAT: { code: "SAT", name: "San Antonio",     stationId: "KSAT", seriesTicker: "KXHIGHTSATX",                                sigma: 3.4, sigmaMkt: 5.8, shiftFreq: 0.44, lat: 29.5337, lon: -98.4698,  timezone: "America/Chicago",     directionBias: -1.0, monthlyNormals: [63,67,75,82,88,95,98,98,92,83,74,65] },
+  MSY: { code: "MSY", name: "New Orleans",     stationId: "KMSY", seriesTicker: "KXHIGHTNOLA",                                sigma: 2.9, sigmaMkt: 4.9, shiftFreq: 0.38, lat: 29.9511, lon: -90.0715,  timezone: "America/Chicago",     directionBias: -0.5, monthlyNormals: [62,65,72,79,86,91,92,92,88,80,71,64] },
+  DEN: { code: "DEN", name: "Denver",          stationId: "KDEN", seriesTicker: "KXHIGHDEN",    lowSeriesTicker: "KXLOWTDEN",  sigma: 3.9, sigmaMkt: 6.4, shiftFreq: 0.49, lat: 39.7392, lon: -104.9903, timezone: "America/Denver",       directionBias:  0.0, monthlyNormals: [46,50,58,67,76,87,93,90,81,69,55,46] },
+  PHI: { code: "PHI", name: "Philadelphia",    stationId: "KPHL", seriesTicker: "KXHIGHPHIL",   lowSeriesTicker: "KXLOWTPHIL", sigma: 3.3, sigmaMkt: 5.6, shiftFreq: 0.43, lat: 39.9526, lon: -75.1652,  timezone: "America/New_York",    directionBias:  2.0, monthlyNormals: [39,43,52,64,74,83,88,86,79,67,55,43] },
+  // ── New cities: PENDING ticker verification ───────────────────────────────────────────────────
+  // Run discoverWeatherSeries from the bot router to get confirmed Kalshi series tickers,
+  // then uncomment each city with its verified seriesTicker.
+  //
+  // PDX: { code: "PDX", name: "Portland",   stationId: "KPDX", seriesTicker: "???", sigma: 3.2, sigmaMkt: 5.5, shiftFreq: 0.42, lat: 45.5898, lon: -122.5951, timezone: "America/Los_Angeles", directionBias: 0.0, monthlyNormals: [47,52,58,63,70,77,82,81,74,63,52,45] },
+  // CLT: { code: "CLT", name: "Charlotte",  stationId: "KCLT", seriesTicker: "???", sigma: 3.1, sigmaMkt: 5.3, shiftFreq: 0.40, lat: 35.2140, lon: -80.9431,  timezone: "America/New_York",    directionBias: 0.0, monthlyNormals: [52,56,64,73,81,88,91,90,83,73,64,55] },
+  // TPA: { code: "TPA", name: "Tampa",      stationId: "KTPA", seriesTicker: "???", sigma: 2.3, sigmaMkt: 3.9, shiftFreq: 0.30, lat: 27.9755, lon: -82.5332,  timezone: "America/New_York",    directionBias: 0.0, monthlyNormals: [71,73,78,83,88,91,91,91,89,84,78,73] },
+  // DTW: { code: "DTW", name: "Detroit",    stationId: "KDTW", seriesTicker: "???", sigma: 3.7, sigmaMkt: 6.2, shiftFreq: 0.46, lat: 42.2124, lon: -83.3534,  timezone: "America/Detroit",     directionBias: 0.0, monthlyNormals: [31,34,44,57,69,79,83,81,73,61,48,36] },
+  // RDU: { code: "RDU", name: "Raleigh",    stationId: "KRDU", seriesTicker: "???", sigma: 3.0, sigmaMkt: 5.1, shiftFreq: 0.40, lat: 35.8801, lon: -78.7880,  timezone: "America/New_York",    directionBias: 0.0, monthlyNormals: [50,54,62,72,79,87,90,88,82,72,62,52] },
+  // BNA: { code: "BNA", name: "Nashville",  stationId: "KBNA", seriesTicker: "???", sigma: 3.3, sigmaMkt: 5.6, shiftFreq: 0.43, lat: 36.1245, lon: -86.6782,  timezone: "America/Chicago",     directionBias: 0.0, monthlyNormals: [48,53,62,71,79,87,91,90,83,73,61,51] },
 };
 
 export interface NwsForecast {
@@ -74,6 +89,9 @@ export interface NwsForecast {
   forecastAgeMinutes: number;     // How old is the NWS forecast (freshness indicator)
   tomorrowHighTemp: number | null;    // NWS forecast high for next calendar day (city local time)
   tomorrowForecastDate: string;       // Tomorrow's date YYYY-MM-DD in city timezone
+  tomorrowLowTemp: number | null;     // NWS overnight low for tomorrow night (for KXLOW markets)
+  dayPlusTwoHighTemp: number | null;  // NWS high for day+2 (2 days from today)
+  dayPlusTwoDate: string;             // Day+2 date YYYY-MM-DD in city timezone
 }
 
 // ─── In-memory cache ────────────────────────────────────────────────────────────
@@ -144,9 +162,11 @@ export class NwsService {
 
       // ── FIX: use local date for THIS city's timezone, not UTC ──
       const todayStr = this.getCityLocalDate(cityCode);
-      const tomorrowDate = new Date(new Date().toLocaleDateString("en-CA", { timeZone: city.timezone }) + "T12:00:00");
-      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-      const tomorrowStr = tomorrowDate.toISOString().split("T")[0];
+      // Add 24/48 hours then format in city timezone — avoids server-TZ-dependent toISOString() bug
+      const tomorrowStr = new Date(Date.now() + 24 * 60 * 60 * 1000)
+        .toLocaleDateString("en-CA", { timeZone: city.timezone });
+      const dayPlusTwoStr = new Date(Date.now() + 48 * 60 * 60 * 1000)
+        .toLocaleDateString("en-CA", { timeZone: city.timezone });
 
       // Find today's daytime period using LOCAL date comparison
       let dayPeriod = periods.find(
@@ -172,24 +192,22 @@ export class NwsService {
           : Math.round(nightPeriod.temperature * 9 / 5 + 32)
         : highTemp - 15;
 
-      // ── Step 3: Extract hourly high for today and tomorrow (more precise) ──
+      // ── Step 3: Extract hourly highs for today, tomorrow, and day+2 ──
       let hourlyHighTemp: number | null = null;
       let tomorrowHourlyHighTemp: number | null = null;
+      let dayPlusTwoHourlyHighTemp: number | null = null;
       if (hourlyRes.status === "fulfilled") {
         const hourlyPeriods: any[] = hourlyRes.value.data?.properties?.periods ?? [];
-        const todayHourlyTemps = hourlyPeriods
-          .filter((p: any) => p.startTime.split("T")[0] === todayStr)
-          .map((p: any) =>
-            p.temperatureUnit === "F" ? p.temperature : Math.round(p.temperature * 9 / 5 + 32)
-          );
-        if (todayHourlyTemps.length > 0) hourlyHighTemp = Math.max(...todayHourlyTemps);
+        const toF = (p: any) => p.temperatureUnit === "F" ? p.temperature : Math.round(p.temperature * 9 / 5 + 32);
 
-        const tomorrowHourlyTemps = hourlyPeriods
-          .filter((p: any) => p.startTime.split("T")[0] === tomorrowStr)
-          .map((p: any) =>
-            p.temperatureUnit === "F" ? p.temperature : Math.round(p.temperature * 9 / 5 + 32)
-          );
-        if (tomorrowHourlyTemps.length > 0) tomorrowHourlyHighTemp = Math.max(...tomorrowHourlyTemps);
+        const todayHourly = hourlyPeriods.filter((p: any) => p.startTime.split("T")[0] === todayStr).map(toF);
+        if (todayHourly.length > 0) hourlyHighTemp = Math.max(...todayHourly);
+
+        const tomorrowHourly = hourlyPeriods.filter((p: any) => p.startTime.split("T")[0] === tomorrowStr).map(toF);
+        if (tomorrowHourly.length > 0) tomorrowHourlyHighTemp = Math.max(...tomorrowHourly);
+
+        const dayPlusTwoHourly = hourlyPeriods.filter((p: any) => p.startTime.split("T")[0] === dayPlusTwoStr).map(toF);
+        if (dayPlusTwoHourly.length > 0) dayPlusTwoHourlyHighTemp = Math.max(...dayPlusTwoHourly);
       }
 
       // Tomorrow's daily period high (fallback when hourly not yet available for tomorrow)
@@ -200,6 +218,26 @@ export class NwsService {
         ? (tomorrowDayPeriod.temperatureUnit === "F"
             ? tomorrowDayPeriod.temperature
             : Math.round(tomorrowDayPeriod.temperature * 9 / 5 + 32))
+        : null;
+
+      // Day+2 daily period high (fallback)
+      const dayPlusTwoDayPeriod = periods.find(
+        (p: any) => p.isDaytime && p.startTime.split("T")[0] === dayPlusTwoStr
+      );
+      const dayPlusTwoDailyHigh = dayPlusTwoDayPeriod
+        ? (dayPlusTwoDayPeriod.temperatureUnit === "F"
+            ? dayPlusTwoDayPeriod.temperature
+            : Math.round(dayPlusTwoDayPeriod.temperature * 9 / 5 + 32))
+        : null;
+
+      // Tomorrow night low (for KXLOW markets)
+      const tomorrowNightPeriod = periods.find(
+        (p: any) => !p.isDaytime && p.startTime.split("T")[0] === tomorrowStr
+      );
+      const tomorrowLowTemp: number | null = tomorrowNightPeriod
+        ? (tomorrowNightPeriod.temperatureUnit === "F"
+            ? tomorrowNightPeriod.temperature
+            : Math.round(tomorrowNightPeriod.temperature * 9 / 5 + 32))
         : null;
 
       // ── Extract precip chance from day period ──
@@ -228,6 +266,9 @@ export class NwsService {
         forecastAgeMinutes,
         tomorrowHighTemp: tomorrowHourlyHighTemp ?? tomorrowDailyHigh,
         tomorrowForecastDate: tomorrowStr,
+        tomorrowLowTemp,
+        dayPlusTwoHighTemp: dayPlusTwoHourlyHighTemp ?? dayPlusTwoDailyHigh,
+        dayPlusTwoDate: dayPlusTwoStr,
       };
 
       forecastCache.set(cityCode, { data: forecast, expiresAt: Date.now() + CACHE_TTL_MS });
