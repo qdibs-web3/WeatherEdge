@@ -13,6 +13,7 @@ import { setupVite, serveStatic } from "./vite";
 import { botManager } from "../services/botManager";
 import { ensureHistoricalTables, runNightlyAccuracyJob } from "../services/historicalDataService";
 import { clearEnsembleCache } from "../services/openMeteoService";
+import * as db from "../db";
 
 const app = express();
 
@@ -49,6 +50,10 @@ async function startServer() {
   } else {
     serveStatic(app);
   }
+
+  // Run DB migrations (adds columns if missing)
+  await db.runMigrations();
+  console.log('[Server] DB migrations applied');
 
   // Initialize Bot Manager
   console.log('[Server] Initializing Bot Manager...');

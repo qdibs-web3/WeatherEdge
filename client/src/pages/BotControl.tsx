@@ -159,8 +159,8 @@ export default function BotControl() {
 
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="bg-[#27272a] rounded p-2.5">
-                <p className="text-gray-500">Signals Today</p>
-                <p className="text-white font-semibold text-base">{status?.signalsFound ?? 0}</p>
+                <p className="text-gray-500">Trades Today</p>
+                <p className="text-white font-semibold text-base">{(status as any)?.dailyTradeCount ?? 0}</p>
               </div>
               <div className="bg-[#27272a] rounded p-2.5">
                 <p className="text-gray-500">Active Cities</p>
@@ -228,7 +228,7 @@ export default function BotControl() {
                 <span className="text-blue-400 text-sm font-semibold">${flatBet}</span>
               </div>
               <Slider min={5} max={200} step={5} value={[flatBet]} onValueChange={([v]) => setFlatBet(v)} className="w-full" />
-              <p className="text-xs text-gray-500">Base amount per trade — scaled up to 1.5× by model conviction</p>
+              <p className="text-xs text-gray-500">Base stake — multiplied 0.5×–3.0× by model conviction (formula: (prob−0.50)/0.15)</p>
             </div>
 
             <div className="space-y-2">
@@ -245,31 +245,39 @@ export default function BotControl() {
               <p className="text-xs font-semibold text-purple-300 uppercase tracking-wide">Locked Strategy Constants</p>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-[#27272a] rounded p-2">
-                  <p className="text-gray-500">Min EV / contract</p>
-                  <p className="text-white font-semibold">10¢</p>
+                  <p className="text-gray-500">Min Conviction</p>
+                  <p className="text-white font-semibold">58% win prob</p>
+                </div>
+                <div className="bg-[#27272a] rounded p-2">
+                  <p className="text-gray-500">Min Model Edge</p>
+                  <p className="text-white font-semibold">8% std / 7% @≥72%</p>
+                </div>
+                <div className="bg-[#27272a] rounded p-2">
+                  <p className="text-gray-500">Bet Scale Range</p>
+                  <p className="text-white font-semibold">0.5× – 3.0×</p>
+                </div>
+                <div className="bg-[#27272a] rounded p-2">
+                  <p className="text-gray-500">Min Win Profit</p>
+                  <p className="text-white font-semibold">15% of flat bet</p>
+                </div>
+                <div className="bg-[#27272a] rounded p-2">
+                  <p className="text-gray-500">NO Safety Bonus</p>
+                  <p className="text-white font-semibold">+0.5× at σ ≥ 1.5</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
                   <p className="text-gray-500">Max Entry Price</p>
                   <p className="text-white font-semibold">55¢</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
-                  <p className="text-gray-500">Min Conviction</p>
-                  <p className="text-white font-semibold">70% win prob</p>
+                  <p className="text-gray-500">YES Safety Floor</p>
+                  <p className="text-white font-semibold">+0.5σ above strike</p>
                 </div>
                 <div className="bg-[#27272a] rounded p-2">
-                  <p className="text-gray-500">Min Model Edge</p>
-                  <p className="text-white font-semibold">+5% over market</p>
-                </div>
-                <div className="bg-[#27272a] rounded p-2">
-                  <p className="text-gray-500">Min Liquidity</p>
-                  <p className="text-white font-semibold">100 open interest</p>
-                </div>
-                <div className="bg-[#27272a] rounded p-2">
-                  <p className="text-gray-500">Regime Filter</p>
-                  <p className="text-white font-semibold">±8°F vs 30yr normal</p>
+                  <p className="text-gray-500">NO Safety Floor</p>
+                  <p className="text-white font-semibold">−1.2σ below strike</p>
                 </div>
               </div>
-              <p className="text-xs text-gray-500">Tuned for profitability at 59-65% win rate. Price cap (55¢) ensures positive EV even without model calibration improvement. All Kalshi fees (7%) factored in.</p>
+              <p className="text-xs text-gray-500">High-conviction trades (≥72% prob) use 7% min edge and scale up to 3.0×. NO safety bonus adds +0.5× when the blended forecast is ≥1.5σ below the strike. Min win profit of 15% prevents chasing thin-margin fills. All Kalshi fees (7%) factored in.</p>
             </div>
 
             <div className="flex items-center justify-between p-3 rounded-lg bg-[#27272a]">
@@ -445,9 +453,8 @@ export default function BotControl() {
               <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
                 <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-300">
-                  Win rate below 40% confirms the prior strategy was fighting the temperature regime.
-                  V2 adds regime filter, 70% conviction floor, 12% min model edge, and market-implied sigma —
-                  targeting 80-90% win rate on fewer but higher-quality trades.
+                  Win rate below 40% — consider tightening filters. Current strategy uses 58% conviction floor,
+                  tiered 8%/7% model edge, and 0.5×–3.0× conviction scaling targeting higher-quality entries.
                 </p>
               </div>
             )}

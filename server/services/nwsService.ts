@@ -186,20 +186,38 @@ export class NwsService {
           ? dayPeriod.temperature
           : Math.round(dayPeriod.temperature * 9 / 5 + 32);
 
-      const lowTemp = nightPeriod
+      // Period-based low — used as fallback only. hourlyOvernightLow (computed below from
+      // hourly data) is preferred for low-market accuracy; see hourly section comment.
+      const lowTempPeriodFallback = nightPeriod
         ? nightPeriod.temperatureUnit === "F"
           ? nightPeriod.temperature
           : Math.round(nightPeriod.temperature * 9 / 5 + 32)
         : highTemp - 15;
+      // lowTemp is resolved after hourly section runs; declared here for scope, assigned below.
+      let lowTemp: number = lowTempPeriodFallback;
 
-      // ── Step 3: Extract hourly highs for today, tomorrow, and day+2 ──
+      // ── Step 3: Extract hourly highs AND overnight lows from hourly data ──
+      //
+      // WHY hourly for lows: NWS daily period labels ("Tonight", "Overnight") are
+      // ambiguous. At 4 AM, "Tonight" refers to the UPCOMING evening (warm), not
+      // the CURRENT overnight trough (cold). Using `!isDaytime && date === todayStr`
+      // matches "Tonight" (future, ~60°F) rather than "This Overnight" (current, ~38°F).
+      // This caused a 20°F error on Chicago LOW markets and two straight losses.
+      //
+      // Fix: derive overnight lows from hourly data using a fixed time window:
+      //   - Today's overnight low  = min hourly temp in [yesterday 9 PM → today 11 AM]
+      //   - Tomorrow's overnight low = min hourly temp in [today 9 PM → tomorrow 11 AM]
+      // This captures the full trough regardless of when the scan runs.
       let hourlyHighTemp: number | null = null;
       let tomorrowHourlyHighTemp: number | null = null;
       let dayPlusTwoHourlyHighTemp: number | null = null;
+      let hourlyOvernightLow: number | null = null;      // Today's overnight min (derived from hourly)
+      let tomorrowHourlyOvernightLow: number | null = null; // Tomorrow's overnight min
       if (hourlyRes.status === "fulfilled") {
         const hourlyPeriods: any[] = hourlyRes.value.data?.properties?.periods ?? [];
         const toF = (p: any) => p.temperatureUnit === "F" ? p.temperature : Math.round(p.temperature * 9 / 5 + 32);
 
+        // Daytime high: all hours on each calendar date
         const todayHourly = hourlyPeriods.filter((p: any) => p.startTime.split("T")[0] === todayStr).map(toF);
         if (todayHourly.length > 0) hourlyHighTemp = Math.max(...todayHourly);
 
@@ -208,6 +226,29 @@ export class NwsService {
 
         const dayPlusTwoHourly = hourlyPeriods.filter((p: any) => p.startTime.split("T")[0] === dayPlusTwoStr).map(toF);
         if (dayPlusTwoHourly.length > 0) dayPlusTwoHourlyHighTemp = Math.max(...dayPlusTwoHourly);
+
+        // Overnight low: hours between 9 PM the prior evening and 11 AM the measured day.
+        // This window reliably captures the temperature trough regardless of scan time.
+        const yesterdayStr = new Date(Date.now() - 24 * 60 * 60 * 1000)
+          .toLocaleDateString("en-CA", { timeZone: city.timezone });
+
+        const todayOvernightHours = hourlyPeriods.filter((p: any) => {
+          const pDate = p.startTime.split("T")[0];
+          const pHour = parseInt(p.startTime.split("T")[1]?.slice(0, 2) ?? "0", 10);
+          // Yesterday 9 PM (21:00) through today 11 AM (10:59)
+          return (pDate === yesterdayStr && pHour >= 21) ||
+                 (pDate === todayStr    && pHour <= 10);
+        }).map(toF);
+        if (todayOvernightHours.length > 0) hourlyOvernightLow = Math.min(...todayOvernightHours);
+
+        const tomorrowOvernightHours = hourlyPeriods.filter((p: any) => {
+          const pDate = p.startTime.split("T")[0];
+          const pHour = parseInt(p.startTime.split("T")[1]?.slice(0, 2) ?? "0", 10);
+          // Today 9 PM (21:00) through tomorrow 11 AM (10:59)
+          return (pDate === todayStr     && pHour >= 21) ||
+                 (pDate === tomorrowStr  && pHour <= 10);
+        }).map(toF);
+        if (tomorrowOvernightHours.length > 0) tomorrowHourlyOvernightLow = Math.min(...tomorrowOvernightHours);
       }
 
       // Tomorrow's daily period high (fallback when hourly not yet available for tomorrow)
@@ -230,15 +271,21 @@ export class NwsService {
             : Math.round(dayPlusTwoDayPeriod.temperature * 9 / 5 + 32))
         : null;
 
-      // Tomorrow night low (for KXLOW markets)
+      // Tonight/tomorrow night low (for KXLOW markets) — prefer hourly-derived overnight min.
+      // Period-based lookup is kept as a fallback only since it can return the wrong night
+      // (see hourly derivation comment above for full explanation).
       const tomorrowNightPeriod = periods.find(
         (p: any) => !p.isDaytime && p.startTime.split("T")[0] === tomorrowStr
       );
-      const tomorrowLowTemp: number | null = tomorrowNightPeriod
+      const tomorrowLowPeriodFallback: number | null = tomorrowNightPeriod
         ? (tomorrowNightPeriod.temperatureUnit === "F"
             ? tomorrowNightPeriod.temperature
             : Math.round(tomorrowNightPeriod.temperature * 9 / 5 + 32))
         : null;
+      const tomorrowLowTemp: number | null = tomorrowHourlyOvernightLow ?? tomorrowLowPeriodFallback;
+
+      // Resolve final lowTemp — prefer hourly overnight min over period label
+      lowTemp = hourlyOvernightLow ?? lowTempPeriodFallback;
 
       // ── Extract precip chance from day period ──
       const precipChance: number | null = dayPeriod.probabilityOfPrecipitation?.value ?? null;

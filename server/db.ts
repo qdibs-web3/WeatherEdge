@@ -140,6 +140,16 @@ function mapUser(row: any): User | null {
   };
 }
 
+/** Add new columns to existing tables without dropping data. Safe to run on every startup. */
+export async function runMigrations(): Promise<void> {
+  const migrations = [
+    `ALTER TABLE forecast_cache_v2 ADD COLUMN IF NOT EXISTS tomorrow_low DECIMAL(5,1) NULL`,
+  ];
+  for (const sql of migrations) {
+    try { await exec(sql); } catch (_) { /* column may already exist */ }
+  }
+}
+
 export async function getUserById(id: number): Promise<User | null> {
   const rows = await q("SELECT * FROM users WHERE id = ? LIMIT 1", [id]);
   return mapUser(rows[0]);
@@ -671,6 +681,7 @@ export async function getLatestForecasts() {
     updatedAt: r.fetched_at,
     forecastDate: r.forecast_date ?? null,
     tomorrowHigh: r.tomorrow_high != null ? Number(r.tomorrow_high) : null,
+    tomorrowLow: r.tomorrow_low != null ? Number(r.tomorrow_low) : null,
     tomorrowForecastDate: r.tomorrow_forecast_date ?? null,
   }));
 }
@@ -688,12 +699,13 @@ export async function upsertForecast(data: {
   precipChance?: number | null;
   forecastDate?: string | null;
   tomorrowHigh?: number | null;
+  tomorrowLow?: number | null;
   tomorrowForecastDate?: string | null;
 }) {
   await q(
     `INSERT INTO forecast_cache_v2
-       (city_code, city_name, forecast_high, low_temp, sigma, short_forecast, detailed_forecast, wind_speed, wind_direction, precip_chance, forecast_date, tomorrow_high, tomorrow_forecast_date, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+       (city_code, city_name, forecast_high, low_temp, sigma, short_forecast, detailed_forecast, wind_speed, wind_direction, precip_chance, forecast_date, tomorrow_high, tomorrow_low, tomorrow_forecast_date, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
      ON DUPLICATE KEY UPDATE
        forecast_high = VALUES(forecast_high),
        low_temp = VALUES(low_temp),
@@ -705,6 +717,7 @@ export async function upsertForecast(data: {
        precip_chance = VALUES(precip_chance),
        forecast_date = VALUES(forecast_date),
        tomorrow_high = VALUES(tomorrow_high),
+       tomorrow_low = VALUES(tomorrow_low),
        tomorrow_forecast_date = VALUES(tomorrow_forecast_date),
        fetched_at = NOW()`,
     [
@@ -720,6 +733,7 @@ export async function upsertForecast(data: {
       data.precipChance ?? null,
       data.forecastDate ?? null,
       data.tomorrowHigh ?? null,
+      data.tomorrowLow ?? null,
       data.tomorrowForecastDate ?? null,
     ]
   );

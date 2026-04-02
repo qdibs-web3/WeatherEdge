@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Filter, RefreshCw, ExternalLink, Sparkles } from "lucide-react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { Search, Filter, RefreshCw, ExternalLink, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import { AreaChart, Area, Tooltip, ResponsiveContainer } from "recharts";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 25;
 
 const KALSHI_ACTIVITY_URL = "https://kalshi.com/account/activity";
 
@@ -53,11 +53,20 @@ export default function Trades() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [openPositionsExpanded, setOpenPositionsExpanded] = useState(true);
+  const [sideFilter, setSideFilter] = useState("all");
+  const [marketTypeFilter, setMarketTypeFilter] = useState("all");
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [mode, setMode] = useState<TradeMode>("paper");
 
+  const toggleRow = (id: number) => setExpandedRows(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  // Fetch all trades at once — client-side filtering + pagination prevents cross-page split
   const { data: trades, isLoading, refetch } = trpc.bot.getTrades.useQuery(
-    { limit: PAGE_SIZE, offset: page * PAGE_SIZE, mode },
+    { limit: 500, offset: 0, mode },
     { refetchInterval: 15000 }
   );
   const { data: stats, refetch: refetchStats } = trpc.bot.getTradeStats.useQuery({ mode }, { refetchInterval: 30000 });
@@ -78,8 +87,13 @@ export default function Trades() {
   const filtered = (trades ?? []).filter((t: any) => {
     const matchSearch = !search || t.cityName?.toLowerCase().includes(search.toLowerCase()) || t.marketTicker?.toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === "all" || (statusFilter === "open" && t.won == null) || (statusFilter === "won" && t.won === true) || (statusFilter === "lost" && t.won === false);
-    return matchSearch && matchStatus;
+    const matchSide = sideFilter === "all" || t.side === sideFilter;
+    const isLow = t.marketTicker?.toUpperCase().startsWith("KXLOWT");
+    const matchType = marketTypeFilter === "all" || (marketTypeFilter === "high" && !isLow) || (marketTypeFilter === "low" && isLow);
+    return matchSearch && matchStatus && matchSide && matchType;
   });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pagedTrades = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   const totalPnl = stats?.totalPnl ?? 0;
   const wins = stats?.wins ?? 0;
@@ -279,125 +293,46 @@ export default function Trades() {
         </Card>
       </div>
 
-      {/* Open Positions */}
-      {openTrades && openTrades.length > 0 && (
-        <Card className="bg-[#18181b] border-[#27272a] border-yellow-500/20">
-          <CardHeader className="pb-3 cursor-pointer" onClick={() => setOpenPositionsExpanded(e => !e)}>
-            <CardTitle className="text-sm font-semibold text-yellow-400 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" /> Open Positions ({openTrades.length})
-              </div>
-              <span className="text-gray-500 text-xs font-normal">{openPositionsExpanded ? "▲ collapse" : "▼ expand"}</span>
-            </CardTitle>
-          </CardHeader>
-          {openPositionsExpanded && (
-          <CardContent>
-            <div className="space-y-2">
-              {openTrades.map((t: any) => {
-                const stake = parseFloat(t.costBasis ?? 0);
-                const netProfit = t.contracts * (100 - t.priceCents) * 0.93 / 100;
-                const totalPayout = stake + netProfit;
-                const impliedProb = t.priceCents;
-                const ourProbPct = t.ourProb != null ? Math.round(t.ourProb * 100) : null;
-                const edge = ourProbPct != null ? ourProbPct - impliedProb : null;
-                const strikeLabel = t.strikeDesc ?? strikeFromTicker(t.marketTicker);
-                const sideColor = t.side?.toUpperCase() === "YES" ? "text-green-400" : "text-red-400";
-                const settlementDate = parseDateFromTicker(t.marketTicker);
-                const fc = forecastMap[t.cityCode];
-                // Prefer blended forecast stored at trade entry (NWS×40% + ensemble×60% + bias).
-                // Fall back to live NWS lookup for trades placed before this was stored.
-                const projectedHigh = t.forecastTemp != null
-                  ? { temp: t.forecastTemp, label: settlementDate === fc?.forecastDate ? "today · blended" : "tomorrow · blended" }
-                  : fc
-                    ? settlementDate === fc.forecastDate
-                      ? { temp: fc.highTemp, label: "today · NWS" }
-                      : settlementDate === fc.tomorrowForecastDate
-                        ? { temp: fc.tomorrowHigh, label: "tomorrow · NWS" }
-                        : null
-                    : null;
-                return (
-                <div key={t.id} className="rounded-lg bg-[#27272a] border border-[#3f3f46] overflow-hidden">
-                  {/* Header row */}
-                  <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#3f3f46]">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-semibold text-white">{t.cityName}</p>
-                      <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${t.side?.toUpperCase() === "YES" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                        {t.side?.toUpperCase()}
-                      </span>
-                      <span className="text-xs text-gray-400 font-medium">{strikeLabel}</span>
-                      {t.marketTicker && (
-                        <a href={kalshiMarketUrl(t.marketTicker, t.cityName)} target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-blue-400 transition-colors">
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500">{new Date(t.createdAt).toLocaleString()}</p>
-                  </div>
-                  {/* Detail row */}
-                  <div className="grid grid-cols-5 divide-x divide-[#3f3f46] px-0">
-                    {/* Position */}
-                    <div className="px-4 py-2.5">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Position</p>
-                      <p className="text-sm font-semibold text-white">{t.contracts} contracts</p>
-                      <p className="text-xs text-gray-400">@ {t.priceCents}¢ each</p>
-                    </div>
-                    {/* Projected High */}
-                    <div className="px-4 py-2.5">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Proj High</p>
-                      <p className="text-sm font-semibold text-white">
-                        {projectedHigh?.temp != null ? `${projectedHigh.temp}°F` : "—"}
-                      </p>
-                      <p className="text-xs text-gray-500">{projectedHigh?.label ?? "—"}</p>
-                    </div>
-                    {/* Edge */}
-                    <div className="px-4 py-2.5">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Our Edge</p>
-                      <p className="text-sm font-semibold text-white">{ourProbPct != null ? `${ourProbPct}%` : "—"}</p>
-                      <p className={`text-xs ${edge != null && edge > 0 ? "text-green-400" : "text-red-400"}`}>
-                        {edge != null ? `${edge > 0 ? "+" : ""}${edge.toFixed(0)}% vs mkt` : `mkt ${impliedProb}%`}
-                      </p>
-                    </div>
-                    {/* Stake / Risk */}
-                    <div className="px-4 py-2.5">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">At Risk</p>
-                      <p className="text-sm font-semibold text-white">${stake.toFixed(2)}</p>
-                      <p className="text-xs text-gray-500">EV: {t.evCents != null ? `${t.evCents.toFixed(1)}¢` : "—"}</p>
-                    </div>
-                    {/* Payout */}
-                    <div className="px-4 py-2.5">
-                      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">If Win</p>
-                      <p className="text-sm font-semibold text-green-400">+${netProfit.toFixed(2)}</p>
-                      <p className="text-xs text-gray-400">Total ${totalPayout.toFixed(2)}</p>
-                    </div>
-                  </div>
-                </div>
-                );
-              })}
-            </div>
-          </CardContent>
-          )}
-        </Card>
-      )}
 
       {/* Filters */}
-      <div className="flex gap-3 flex-wrap">
+      <div className="flex gap-2 flex-wrap items-center">
         <div className="relative flex-1 min-w-48">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <Input placeholder="Search city or ticker..." value={search} onChange={(e) => setSearch(e.target.value)}
+          <Input placeholder="Search city or ticker..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             className="pl-9 bg-[#18181b] border-[#27272a] text-white placeholder:text-gray-500" />
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-36 bg-[#18181b] border-[#27272a] text-gray-300">
-            <Filter className="h-3.5 w-3.5 mr-1.5" />
-            <SelectValue />
+        <Select value={statusFilter} onValueChange={v => { setStatusFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-32 bg-[#18181b] border-[#27272a] text-gray-300">
+            <Filter className="h-3.5 w-3.5 mr-1.5" /><SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-[#18181b] border-[#27272a]">
-            <SelectItem value="all">All Trades</SelectItem>
+            <SelectItem value="all">All Status</SelectItem>
             <SelectItem value="open">Open</SelectItem>
             <SelectItem value="won">Won</SelectItem>
             <SelectItem value="lost">Lost</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={sideFilter} onValueChange={v => { setSideFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-28 bg-[#18181b] border-[#27272a] text-gray-300">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-[#18181b] border-[#27272a]">
+            <SelectItem value="all">All Sides</SelectItem>
+            <SelectItem value="yes">YES only</SelectItem>
+            <SelectItem value="no">NO only</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={marketTypeFilter} onValueChange={v => { setMarketTypeFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-32 bg-[#18181b] border-[#27272a] text-gray-300">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-[#18181b] border-[#27272a]">
+            <SelectItem value="all">All Markets</SelectItem>
+            <SelectItem value="high">High Temp</SelectItem>
+            <SelectItem value="low">Low Temp</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-gray-600 ml-auto">{filtered.length} trade{filtered.length !== 1 ? "s" : ""}</p>
       </div>
 
       {/* Trade Table */}
@@ -412,13 +347,14 @@ export default function Trades() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-[#27272a]">
-                    {["City", "Market", "Side", "Contracts", "Entry", "Exit", "P&L", "Status", "Date"].map(h => (
-                      <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide">{h}</th>
+                    <th className="w-8 px-2 py-3" />
+                    {["City / Market", "Side", "Position", "Forecast", "Edge", "At Risk", "P&L", "Status", "Date"].map(h => (
+                      <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((t: any) => {
+                  {pagedTrades.map((t: any) => {
                     const pnl = parseFloat(t.pnl ?? 0);
                     const stake = parseFloat(t.costBasis ?? 0);
                     const totalReturn = pnl + stake;
@@ -426,76 +362,155 @@ export default function Trades() {
                       ? (Number(t.contracts) * (100 - Number(t.priceCents)) * 0.93) / 100
                       : null;
                     const potentialPayout = potentialWin != null ? potentialWin + stake : null;
+                    const ourProbPct = t.ourProb != null ? Math.round(t.ourProb * 100) : null;
+                    const impliedPct = t.priceCents != null ? Number(t.priceCents) : null;
+                    const edge = ourProbPct != null && impliedPct != null ? ourProbPct - impliedPct : null;
+                    const isLowMkt = t.marketTicker?.toUpperCase().startsWith("KXLOWT");
+                    const fc = forecastMap[t.cityCode];
+                    const settlementDate = parseDateFromTicker(t.marketTicker);
+                    const dateLabel = settlementDate === fc?.forecastDate ? "today" : "tomorrow";
+                    const tempKind = isLowMkt ? "low" : "high";
+                    const projectedTemp = t.forecastTemp != null
+                      ? { temp: t.forecastTemp, label: `${dateLabel} · blended ${tempKind}` }
+                      : fc
+                        ? isLowMkt
+                          ? settlementDate === fc.forecastDate
+                            ? { temp: fc.lowTemp, label: "today · NWS low" }
+                            : { temp: fc.tomorrowLow, label: "tomorrow · NWS low" }
+                          : settlementDate === fc.forecastDate
+                            ? { temp: fc.highTemp, label: "today · NWS high" }
+                            : { temp: fc.tomorrowHigh, label: "tomorrow · NWS high" }
+                        : null;
+                    const isExpanded = expandedRows.has(t.id);
                     return (
-                      <tr key={t.id} className="border-b border-[#27272a] hover:bg-[#27272a]/50 transition-colors">
-                        <td className="px-4 py-3 text-white font-medium">{t.cityName}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <div>
-                              <p className="text-sm text-gray-300">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)}</p>
-                              <p className="text-xs text-gray-600 font-mono">{t.marketTicker}</p>
-                            </div>
-                            {t.marketTicker && (
-                              <a
-                                href={t.won == null ? kalshiMarketUrl(t.marketTicker, t.cityName) : KALSHI_ACTIVITY_URL}
-                                target="_blank" rel="noopener noreferrer"
-                                className="text-gray-600 hover:text-blue-400 transition-colors"
-                              >
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            )}
-                          </div>
+                      <>
+                      <tr
+                        key={t.id}
+                        onClick={() => toggleRow(t.id)}
+                        className="border-b border-[#27272a] hover:bg-[#27272a]/50 transition-colors cursor-pointer select-none"
+                      >
+                        {/* Expand toggle */}
+                        <td className="pl-3 pr-1 py-3 text-gray-600">
+                          {isExpanded
+                            ? <ChevronDown className="h-3.5 w-3.5" />
+                            : <ChevronRight className="h-3.5 w-3.5" />}
                         </td>
+                        {/* City / Market */}
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-semibold text-white">{t.cityName}</p>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <p className="text-xs text-gray-400">{t.strikeDesc ?? strikeFromTicker(t.marketTicker)}</p>
+                            {isLowMkt && <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 font-medium">LOW</span>}
+                          </div>
+                          <p className="text-[10px] text-gray-600 font-mono mt-0.5">{t.marketTicker}</p>
+                        </td>
+                        {/* Side */}
                         <td className="px-4 py-3">
                           <Badge variant="outline" className={t.side === 'yes' ? 'border-green-500/40 text-green-400' : 'border-red-500/40 text-red-400'}>
                             {t.side?.toUpperCase()}
                           </Badge>
                         </td>
-                        <td className="px-4 py-3 text-gray-300">{t.contracts}</td>
-                        <td className="px-4 py-3 text-gray-300">{t.priceCents != null ? `${t.priceCents}¢` : '—'}</td>
-                        <td className="px-4 py-3 text-gray-300">{t.settlementValue != null ? `$${parseFloat(t.settlementValue).toFixed(2)}` : '—'}</td>
-                        <td className="px-4 py-3">
+                        {/* Position */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <p className="text-sm font-semibold text-white">{t.contracts} contracts</p>
+                          <p className="text-xs text-gray-400">@ {t.priceCents != null ? `${t.priceCents}¢` : '—'} each</p>
+                        </td>
+                        {/* Forecast */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <p className="text-sm font-semibold text-white">
+                            {projectedTemp?.temp != null ? `${projectedTemp.temp}°F` : "—"}
+                          </p>
+                          <p className="text-xs text-gray-500">{projectedTemp?.label ?? "—"}</p>
+                        </td>
+                        {/* Edge */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <p className="text-sm font-semibold text-white">{ourProbPct != null ? `${ourProbPct}%` : "—"}</p>
+                          <p className={`text-xs ${edge != null && edge > 0 ? "text-green-400" : "text-red-400"}`}>
+                            {edge != null ? `${edge > 0 ? "+" : ""}${edge.toFixed(0)}% vs mkt` : impliedPct != null ? `mkt ${impliedPct}%` : "—"}
+                          </p>
+                        </td>
+                        {/* At Risk */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <p className="text-sm font-semibold text-white">${stake.toFixed(2)}</p>
+                          <p className="text-xs text-gray-500">EV: {t.evCents != null ? `${Number(t.evCents).toFixed(1)}¢` : "—"}</p>
+                        </td>
+                        {/* P&L */}
+                        <td className="px-4 py-3 whitespace-nowrap">
                           {t.won === true ? (
                             <>
-                              <p className="font-semibold text-green-400">+${pnl.toFixed(2)} profit</p>
-                              <p className="text-[10px] text-gray-500 mt-0.5">${totalReturn.toFixed(2)} total returned</p>
-                              <p className="text-[10px] text-gray-600">${stake.toFixed(2)} stake recovered</p>
+                              <p className="font-semibold text-green-400">+${pnl.toFixed(2)}</p>
+                              <p className="text-[10px] text-gray-500">${totalReturn.toFixed(2)} returned</p>
                             </>
                           ) : t.won === false ? (
                             <>
-                              <p className="font-semibold text-red-400">-${stake.toFixed(2)} lost</p>
-                              <p className="text-[10px] text-gray-500 mt-0.5">$0.00 returned</p>
-                              <p className="text-[10px] text-gray-600">${stake.toFixed(2)} stake forfeited</p>
+                              <p className="font-semibold text-red-400">-${stake.toFixed(2)}</p>
+                              <p className="text-[10px] text-gray-500">$0.00 returned</p>
                             </>
-                          ) : (
+                          ) : potentialWin != null ? (
                             <>
-                              {potentialWin != null ? (
-                                <>
-                                  <p className="text-sm font-semibold text-emerald-400">+${potentialWin.toFixed(2)} if win</p>
-                                  <p className="text-xs text-gray-400 mt-0.5">${potentialPayout!.toFixed(2)} total payout</p>
-                                </>
-                              ) : (
-                                <p className="text-sm text-gray-500">—</p>
-                              )}
+                              <p className="text-sm font-semibold text-emerald-400">+${potentialWin.toFixed(2)} if win</p>
+                              <p className="text-[10px] text-gray-400">${potentialPayout!.toFixed(2)} payout</p>
                             </>
-                          )}
+                          ) : <p className="text-sm text-gray-500">—</p>}
                         </td>
+                        {/* Status */}
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex flex-col gap-1">
                             {t.won === true ? (
-                              <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Won</Badge>
+                              <Badge className="bg-green-500/20 text-green-400 border-green-500/30 w-fit">Won</Badge>
                             ) : t.won === false ? (
-                              <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Lost</Badge>
+                              <Badge className="bg-red-500/20 text-red-400 border-red-500/30 w-fit">Lost</Badge>
                             ) : (
-                              <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">Open</Badge>
+                              <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30 w-fit">Open</Badge>
                             )}
-                            {t.isPaper && (
-                              <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">Paper</Badge>
-                            )}
+                            {t.isPaper && <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 w-fit">Paper</Badge>}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-gray-500 text-xs">{new Date(t.createdAt).toLocaleDateString()}</td>
+                        {/* Date */}
+                        <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{new Date(t.createdAt).toLocaleDateString()}</td>
                       </tr>
+                      {/* Expanded detail row */}
+                      {isExpanded && (
+                        <tr key={`${t.id}-detail`} className="border-b border-[#27272a] bg-[#111113]">
+                          <td />
+                          <td colSpan={9} className="px-4 py-4">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                              <div className="space-y-1">
+                                <p className="text-gray-500 uppercase tracking-wide font-medium">Market</p>
+                                <p className="text-gray-300 font-mono">{t.marketTicker ?? "—"}</p>
+                                {t.marketTicker && (
+                                  <a href={t.won == null ? kalshiMarketUrl(t.marketTicker, t.cityName) : KALSHI_ACTIVITY_URL}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-blue-400 hover:text-blue-300 mt-1">
+                                    <ExternalLink className="h-3 w-3" /> View on Kalshi
+                                  </a>
+                                )}
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-gray-500 uppercase tracking-wide font-medium">Conviction</p>
+                                <p className="text-gray-300">{ourProbPct != null ? `${ourProbPct}% our prob` : "—"}</p>
+                                <p className="text-gray-500">{impliedPct != null ? `${impliedPct}% market implied` : "—"}</p>
+                                {edge != null && <p className={edge > 0 ? "text-green-400" : "text-red-400"}>{edge > 0 ? "+" : ""}{edge.toFixed(0)}% edge</p>}
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-gray-500 uppercase tracking-wide font-medium">Economics</p>
+                                <p className="text-gray-300">${stake.toFixed(2)} staked</p>
+                                {potentialWin != null && <p className="text-emerald-400">+${potentialWin.toFixed(2)} if win</p>}
+                                {potentialPayout != null && <p className="text-gray-500">${potentialPayout.toFixed(2)} total payout</p>}
+                                <p className="text-gray-500">EV: {t.evCents != null ? `+${Number(t.evCents).toFixed(1)}¢/contract` : "—"}</p>
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-gray-500 uppercase tracking-wide font-medium">Settlement</p>
+                                <p className="text-gray-300">{settlementDate ?? "—"}</p>
+                                <p className="text-gray-500">{isLowMkt ? "Overnight low" : "Daily high"} market</p>
+                                <p className="text-gray-500">Entered {new Date(t.createdAt).toLocaleString()}</p>
+                                {t.settledAt && <p className="text-gray-500">Settled {new Date(t.settledAt).toLocaleString()}</p>}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </>
                     );
                   })}
                 </tbody>
@@ -506,13 +521,15 @@ export default function Trades() {
       </Card>
 
       {/* Pagination */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500">Page {page + 1}</p>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>Previous</Button>
-          <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300" onClick={() => setPage(p => p + 1)} disabled={(trades?.length ?? 0) < PAGE_SIZE}>Next</Button>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-gray-500">Page {page + 1} of {totalPages} · {filtered.length} trades</p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>Previous</Button>
+            <Button variant="outline" size="sm" className="border-[#27272a] text-gray-300" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>Next</Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

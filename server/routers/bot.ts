@@ -24,6 +24,9 @@ export const botRouter = router({
       dryRun: config?.dryRun ?? true,
       isActive: config?.isActive ?? false,
       lastSignals: (liveStatus as any).lastSignals ?? [],
+      tradesThisSession: (liveStatus as any).tradesThisSession ?? 0,
+      dailyTradeCount: (liveStatus as any).dailyTradeCount ?? 0,
+      scanMode: (liveStatus as any).scanMode ?? "idle",
     };
   }),
 
@@ -180,15 +183,29 @@ export const botRouter = router({
   }),
 
   // Returns Open-Meteo multi-model ensemble data for all cities (cached 20 min)
+  // Fetches today, tomorrow, and day+2 — matching what the bot uses internally per scan.
   getEnsembleForecasts: protectedProcedure.query(async () => {
     const results = await Promise.allSettled(
       Object.values(CITIES).map(async (city) => {
-        const today = new Date().toLocaleDateString("en-CA", { timeZone: city.timezone });
-        const ensemble = await getEnsembleForecast(city.lat, city.lon, today, city.timezone);
+        const now = Date.now();
+        const today       = new Date(now).toLocaleDateString("en-CA", { timeZone: city.timezone });
+        const tomorrow    = new Date(now + 86400000).toLocaleDateString("en-CA", { timeZone: city.timezone });
+        const dayPlusTwo  = new Date(now + 172800000).toLocaleDateString("en-CA", { timeZone: city.timezone });
+
+        const [ensToday, ensTomorrow, ensDayPlusTwo] = await Promise.allSettled([
+          getEnsembleForecast(city.lat, city.lon, today, city.timezone),
+          getEnsembleForecast(city.lat, city.lon, tomorrow, city.timezone),
+          getEnsembleForecast(city.lat, city.lon, dayPlusTwo, city.timezone),
+        ]);
+
         return {
           cityCode: city.code,
-          ensemble,
-          date: today,
+          ensemble:           ensToday.status      === "fulfilled" ? ensToday.value      : null,
+          tomorrowEnsemble:   ensTomorrow.status   === "fulfilled" ? ensTomorrow.value   : null,
+          dayPlusTwoEnsemble: ensDayPlusTwo.status === "fulfilled" ? ensDayPlusTwo.value : null,
+          date:        today,
+          tomorrowDate: tomorrow,
+          dayPlusTwoDate: dayPlusTwo,
           directionBias: city.directionBias,
           sigma: city.sigma,
         };
