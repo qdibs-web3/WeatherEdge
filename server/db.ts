@@ -510,7 +510,8 @@ export async function updateTradeSettlements(userId: number, settlements: any[])
 export async function settlePaperTradesByTicker(
   userId: number,
   marketTicker: string,
-  result: "yes" | "no"
+  result: "yes" | "no",
+  settlementTemp?: number | null
 ): Promise<number> {
   // Fetch all open paper trades for this ticker
   const rows = await q(
@@ -545,9 +546,10 @@ export async function settlePaperTradesByTicker(
           SET status = 'settled',
               won = ?,
               pnl = ?,
-              settled_at = NOW()
+              settled_at = NOW(),
+              settlement_value = ?
         WHERE id = ?`,
-      [won, pnl.toFixed(4), row.id]
+      [won, pnl.toFixed(4), settlementTemp ?? null, row.id]
     );
     settled++;
   }

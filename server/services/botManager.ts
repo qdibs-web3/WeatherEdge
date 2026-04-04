@@ -187,10 +187,17 @@ class BotManager {
           continue;
         }
 
+        // Derive settlement temp from strike: the strike is the boundary the market resolved against.
+        // floor_strike = the ">X°F" threshold, cap_strike = the "<X°F" threshold.
+        const settlementTemp: number | null =
+          (market as any).floor_strike != null ? Number((market as any).floor_strike) :
+          (market as any).cap_strike   != null ? Number((market as any).cap_strike)   : null;
+
         const settled = await db.settlePaperTradesByTicker(
           userId,
           ticker,
-          resultNorm as "yes" | "no"
+          resultNorm as "yes" | "no",
+          settlementTemp
         );
         totalSettled += settled;
       } catch (err: any) {

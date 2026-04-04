@@ -118,7 +118,7 @@ const YES_SAFETY_SIGMA = 0.5;
 // a coin flip masked by a high ourProb (model overconfidence near the strike).
 // This guard is applied AFTER the sigma-based safety check — it catches cases where
 // sigma is small (SFO σ=2.2) so 0.5σ ≈ 1.1°F, still too thin.
-const MIN_STRIKE_MARGIN_F = 2.0;
+const MIN_STRIKE_MARGIN_F = 3.0;
 //
 // Ensemble spread guard REMOVED (2026-03-29, sim 7): The city-level spread guard was redundant
 // with the per-market NWS-ensemble divergence guard (4°F, below in analyzeCity). The spread guard

@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Filter, RefreshCw, ExternalLink, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import { Search, Filter, RefreshCw, ExternalLink, Sparkles, ChevronDown, ChevronRight, Clock } from "lucide-react";
 import { AreaChart, Area, Tooltip, ResponsiveContainer } from "recharts";
 
 const PAGE_SIZE = 25;
@@ -25,6 +25,22 @@ function parseDateFromTicker(ticker: string | null): string | null {
   const day = m[3].padStart(2, "0");
   if (!month) return null;
   return `${year}-${month}-${day}`;
+}
+
+function getCountdown(ticker: string | null, won: boolean | null): { label: string; urgent: boolean } {
+  if (won !== null) return { label: "—", urgent: false };
+  const date = parseDateFromTicker(ticker);
+  if (!date) return { label: "—", urgent: false };
+  // Kalshi HIGH markets settle ~11 PM ET on settlement date; EDT = UTC-4 in April
+  const settleMs = new Date(`${date}T23:00:00-04:00`).getTime();
+  const diff = settleMs - Date.now();
+  if (diff <= 0) return { label: "Resolving", urgent: true };
+  const totalMins = Math.floor(diff / 60000);
+  const hours = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (hours >= 48) return { label: `${Math.floor(hours / 24)}d ${hours % 24}h`, urgent: false };
+  if (hours >= 1)  return { label: `${hours}h ${mins}m`, urgent: hours < 6 };
+  return { label: `${mins}m`, urgent: true };
 }
 
 function strikeFromTicker(ticker: string | null): string {
@@ -348,7 +364,7 @@ export default function Trades() {
                 <thead>
                   <tr className="border-b border-[#27272a]">
                     <th className="w-8 px-2 py-3" />
-                    {["City / Market", "Side", "Position", "Forecast", "Edge", "At Risk", "P&L", "Status", "Date"].map(h => (
+                    {["City / Market", "Side", "Position", "Forecast", "Edge", "At Risk", "P&L", "Status", "Resolves", "Date"].map(h => (
                       <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -368,18 +384,21 @@ export default function Trades() {
                     const isLowMkt = t.marketTicker?.toUpperCase().startsWith("KXLOWT");
                     const fc = forecastMap[t.cityCode];
                     const settlementDate = parseDateFromTicker(t.marketTicker);
-                    const dateLabel = settlementDate === fc?.forecastDate ? "today" : "tomorrow";
+                    // Format settlement date as "Apr 2" — use noon to avoid UTC midnight rollback
+                    const settlementLabel = settlementDate
+                      ? new Date(settlementDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                      : "—";
                     const tempKind = isLowMkt ? "low" : "high";
                     const projectedTemp = t.forecastTemp != null
-                      ? { temp: t.forecastTemp, label: `${dateLabel} · blended ${tempKind}` }
+                      ? { temp: t.forecastTemp, label: `${settlementLabel} · blended ${tempKind}` }
                       : fc
                         ? isLowMkt
                           ? settlementDate === fc.forecastDate
-                            ? { temp: fc.lowTemp, label: "today · NWS low" }
-                            : { temp: fc.tomorrowLow, label: "tomorrow · NWS low" }
+                            ? { temp: fc.lowTemp, label: `${settlementLabel} · NWS low` }
+                            : { temp: fc.tomorrowLow, label: `${settlementLabel} · NWS low` }
                           : settlementDate === fc.forecastDate
-                            ? { temp: fc.highTemp, label: "today · NWS high" }
-                            : { temp: fc.tomorrowHigh, label: "tomorrow · NWS high" }
+                            ? { temp: fc.highTemp, label: `${settlementLabel} · NWS high` }
+                            : { temp: fc.tomorrowHigh, label: `${settlementLabel} · NWS high` }
                         : null;
                     const isExpanded = expandedRows.has(t.id);
                     return (
@@ -466,6 +485,22 @@ export default function Trades() {
                             {t.isPaper && <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 w-fit">Paper</Badge>}
                           </div>
                         </td>
+                        {/* Resolves countdown */}
+                        {(() => {
+                          const cd = getCountdown(t.marketTicker, t.won ?? null);
+                          return (
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              {t.won !== null ? (
+                                <span className="text-xs text-gray-600">—</span>
+                              ) : (
+                                <div className={`flex items-center gap-1 ${cd.urgent ? "text-orange-400" : "text-gray-300"}`}>
+                                  <Clock className="h-3 w-3 shrink-0" />
+                                  <span className="text-xs font-mono font-semibold">{cd.label}</span>
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })()}
                         {/* Date */}
                         <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{new Date(t.createdAt).toLocaleDateString()}</td>
                       </tr>
@@ -473,7 +508,7 @@ export default function Trades() {
                       {isExpanded && (
                         <tr key={`${t.id}-detail`} className="border-b border-[#27272a] bg-[#111113]">
                           <td />
-                          <td colSpan={9} className="px-4 py-4">
+                          <td colSpan={10} className="px-4 py-4">
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                               <div className="space-y-1">
                                 <p className="text-gray-500 uppercase tracking-wide font-medium">Market</p>
