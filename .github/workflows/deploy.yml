@@ -1,4 +1,4 @@
-name: Deploy Dashboard to EC2
+name: Deploy WeatherEdge to EC2
 
 on:
   push:
@@ -11,40 +11,37 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Deploy to EC2
-      uses: appleboy/ssh-action@master
+      uses: appleboy/ssh-action@v1
       with:
         host: ${{ secrets.EC2_HOST }}
         username: ubuntu
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
-          cd ~/polymarket-dashboard
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+          cd ~/WeatherEdge
 
           # Pull latest code
-          git pull origin main || git clone https://github.com/qdibs-web3/polymarket-dashboard.git ~/polymarket-dashboard
-          cd ~/polymarket-dashboard
           git pull origin main
 
           # Install dependencies
           npm install --legacy-peer-deps
 
-          # Fix permissions for cross-env
-          chmod +x node_modules/cross-env/dist/bin/cross-env.js
-
-          # Build
+          # Build the app
           npm run build
 
-          # Copy built files to nginx directory
-          echo "Copying build to nginx directory..."
-          sudo rm -rf /var/www/predictiveapex.club/dist
-          sudo cp -r ~/polymarket-dashboard/dist /var/www/predictiveapex.club/
-          sudo chown -R www-data:www-data /var/www/predictiveapex.club/dist
+          # Copy build output to nginx directory
+          sudo rm -rf /var/www/predictiveapex.club/*
+          sudo cp -r dist/* /var/www/predictiveapex.club/
+          sudo chown -R www-data:www-data /var/www/predictiveapex.club
 
-          # Reload nginx to serve new files
+          # Reload nginx
           sudo nginx -t && sudo systemctl reload nginx
 
-          # Restart PM2
-          pm2 restart polymarket-dashboard || pm2 start npm --name "polymarket-dashboard" -- start
-          pm2 save
+          # Restart PM2 if you have a backend process
+          # pm2 restart weatheredge-api || true
+          # pm2 save

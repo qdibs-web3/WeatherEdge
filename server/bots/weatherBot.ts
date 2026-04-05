@@ -648,15 +648,18 @@ export class WeatherBot {
     // Use hourly high if available (more accurate), else daily period high
     const nwsTemp = forecast.hourlyHighTemp ?? forecast.highTemp;
 
-    // ── Multi-model ensemble (Open-Meteo: ECMWF + GFS + best_match) ──────────
-    // Fetch in parallel with market data; degrade gracefully if unavailable.
-    const [ensembleResult, tomorrowEnsembleResult, dayPlusTwoEnsembleResult, marketsResult, lowMarketsResult] = await Promise.allSettled([
+    // ── Multi-model ensemble (Open-Meteo: best_match + GFS + ICON + ECMWF + GEM) ──
+    // Fetched in parallel with market data; degrades gracefully if any model fails.
+    const [
+      ensembleResult, tomorrowEnsembleResult, dayPlusTwoEnsembleResult,
+      marketsResult, lowMarketsResult,
+    ] = await Promise.allSettled([
       getEnsembleForecast(city.lat, city.lon, forecast.forecastDate, city.timezone),
       forecast.tomorrowHighTemp != null
         ? getEnsembleForecast(city.lat, city.lon, forecast.tomorrowForecastDate, city.timezone)
         : Promise.resolve(null),
       forecast.dayPlusTwoHighTemp != null
-        ? getEnsembleForecast(city.lat, city.lon, forecast.dayPlusTwoDate, city.timezone)
+        ? getEnsembleForecast(city.lat, city.lon, forecast.dayPlusTwoDate, city.timezone, true)
         : Promise.resolve(null),
       this.kalshi.getMarkets({ series_ticker: city.seriesTicker, status: "open", limit: 25 }),
       city.lowSeriesTicker
@@ -683,7 +686,7 @@ export class WeatherBot {
     const effectiveMaxPrice = MAX_PRICE_CENTS_HARD_CAP;
     const minWinProfit = this.config.flatBetDollars * 0.15;
 
-    console.log(`[WeatherBot] ${city.code} — ${markets.length} markets | NWS today ${nwsTemp}°F${forecast.tomorrowHighTemp != null ? ` / tomorrow ${forecast.tomorrowHighTemp}°F` : ""} | bias ${city.directionBias > 0 ? "+" : ""}${city.directionBias}°F | σ=${city.sigma}°F`);
+    console.log(`[WeatherBot] ${city.code} — ${markets.length} markets | NWS today ${nwsTemp}°F${forecast.tomorrowHighTemp != null ? ` / tomorrow ${forecast.tomorrowHighTemp}°F` : ""} | bias ${city.directionBias > 0 ? "+" : ""}${city.directionBias}°F | σ=${city.sigma}°F | ensemble=${ensemble ? `${ensemble.modelCount}mdl/${ensemble.consensus}°F` : "n/a"}`);
 
     for (const market of markets) {
       const floor      = market.floor_strike ?? null;
@@ -728,8 +731,11 @@ export class WeatherBot {
       const marketEns    = isToday ? ensemble : isTomorrow ? tomorrowEnsemble : dayPlusTwoEnsemble;
       // Day+2 forecasts carry more uncertainty — widen sigma by 30% to account for longer horizon
       const marketSigma  = isDay2 ? city.sigma * 1.3 : city.sigma;
+
+      // ── NWS + ensemble blend ──────────────────────────────────────────────────
+      // NWS 40% + ensemble 60%. Falls back to NWS-only if ensemble unavailable.
       let marketForecastTemp: number;
-      if (marketEns && marketEns.modelCount >= 2) {
+      if (marketEns && marketEns.modelCount >= 1) {
         marketForecastTemp = marketNwsRaw * 0.40 + marketEns.consensus * 0.60;
       } else {
         marketForecastTemp = marketNwsRaw;

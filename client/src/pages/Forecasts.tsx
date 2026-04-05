@@ -51,7 +51,7 @@ export default function Forecasts() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Live Forecasts</h1>
-          <p className="text-xs text-gray-500">NWS + 3-model ensemble (Best/ICON/GEM) · updates every 5 min</p>
+          <p className="text-xs text-gray-500">NWS + 4-model ensemble (Best/GFS/ICON/GEM) · updates every 5 min</p>
         </div>
         <Button
           variant="outline"
@@ -110,20 +110,24 @@ export default function Forecasts() {
               ? new Date(ensEntry.dayPlusTwoDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
               : null;
 
+            // Blend helper: NWS 40% + ensemble 60%; falls back to NWS-only
+            function calcBlend(nws: number | null, ens: any | null, bias: number): number | null {
+              if (nws == null) return null;
+              if (!ens || ens.modelCount < 1) return Math.round((nws + bias) * 10) / 10;
+              return Math.round((nws * 0.40 + ens.consensus * 0.60 + bias) * 10) / 10;
+            }
+
             // Today ensemble calcs
             const spreadBad   = ensemble && ensemble.spread > 6;
             const spreadWarn  = ensemble && ensemble.spread > 3 && ensemble.spread <= 6;
-            const blendedForecast = high != null && ensemble
-              ? Math.round((high * 0.40 + ensemble.consensus * 0.60 + ensBias) * 10) / 10 : null;
+            const blendedForecast = calcBlend(high, ensemble, ensBias);
             const nwsVsDelta = high != null && ensemble
               ? Math.round((ensemble.consensus - high) * 10) / 10 : null;
 
             // Tomorrow ensemble calcs
             const tomSpreadBad  = tomorrowEnsemble && tomorrowEnsemble.spread > 6;
             const tomSpreadWarn = tomorrowEnsemble && tomorrowEnsemble.spread > 3 && tomorrowEnsemble.spread <= 6;
-            const blendedTomorrow = tomorrowHigh != null && tomorrowEnsemble
-              ? Math.round((tomorrowHigh * 0.40 + tomorrowEnsemble.consensus * 0.60 + ensBias) * 10) / 10
-              : tomorrowHigh;
+            const blendedTomorrow = calcBlend(tomorrowHigh, tomorrowEnsemble, ensBias) ?? tomorrowHigh;
             const tomNwsVsDelta = tomorrowHigh != null && tomorrowEnsemble
               ? Math.round((tomorrowEnsemble.consensus - tomorrowHigh) * 10) / 10 : null;
 
@@ -236,7 +240,7 @@ export default function Forecasts() {
                   )}
                 </div>
 
-                {/* Ensemble dropdown toggle */}
+                {/* Ensemble dropdown */}
                 {ensemble && (
                   <div>
                     <button
@@ -260,37 +264,43 @@ export default function Forecasts() {
 
                     {ensExpanded && (
                       <div className="mt-1 space-y-1.5">
-                        {/* Helper to render one day's ensemble block */}
                         {([
-                          { label: ensDateLabel,   ens: ensemble,           nwsTemp: high,          blended: blendedForecast, delta: nwsVsDelta,    bad: spreadBad,    warn: spreadWarn },
-                          { label: tomEnsDateLabel, ens: tomorrowEnsemble,  nwsTemp: tomorrowHigh,  blended: blendedTomorrow,  delta: tomNwsVsDelta, bad: tomSpreadBad, warn: tomSpreadWarn },
-                          { label: d2EnsDateLabel,  ens: dayPlusTwoEnsemble, nwsTemp: null,         blended: null,             delta: null,          bad: dayPlusTwoEnsemble && dayPlusTwoEnsemble.spread > 6, warn: dayPlusTwoEnsemble && dayPlusTwoEnsemble.spread > 3 && dayPlusTwoEnsemble.spread <= 6 },
+                          { label: ensDateLabel,    ens: ensemble,           blended: blendedForecast, delta: nwsVsDelta,    bad: spreadBad,    warn: spreadWarn },
+                          { label: tomEnsDateLabel, ens: tomorrowEnsemble,   blended: blendedTomorrow,  delta: tomNwsVsDelta, bad: tomSpreadBad, warn: tomSpreadWarn },
+                          { label: d2EnsDateLabel,  ens: dayPlusTwoEnsemble, blended: null,             delta: null,          bad: dayPlusTwoEnsemble && dayPlusTwoEnsemble.spread > 6, warn: dayPlusTwoEnsemble && dayPlusTwoEnsemble.spread > 3 && dayPlusTwoEnsemble.spread <= 6 },
                         ] as const).filter(d => d.ens != null).map((d) => (
                           <div key={d.label ?? "ens"} className={`rounded px-2 py-2 space-y-1.5 border ${
                             d.bad  ? "bg-red-500/5 border-red-500/20" :
                             d.warn ? "bg-yellow-500/5 border-yellow-500/20" :
                                      "bg-emerald-500/5 border-emerald-500/20"
                           }`}>
+                            {/* Date + spread */}
                             <div className="flex items-center justify-between text-[10px]">
                               <span className="text-gray-500 font-medium">{d.label ?? "—"}</span>
                               <span className={d.bad ? "text-red-400" : d.warn ? "text-yellow-400" : "text-emerald-400"}>
                                 {d.bad ? "⚠" : d.warn ? "~" : "✓"} ±{d.ens!.spread}°
                               </span>
                             </div>
-                            <div className="grid grid-cols-3 gap-1 text-[10px] text-center">
+                            {/* 5 model values */}
+                            <div className="grid grid-cols-2 gap-1 text-[9px] text-center">
                               <div>
-                                <p className="text-gray-600">Best 30%</p>
+                                <p className="text-emerald-600">Best 30%</p>
                                 <p className="text-gray-200 font-medium">{d.ens!.bestMatch != null ? `${(Math.round(d.ens!.bestMatch * 10) / 10).toFixed(1)}°` : "—"}</p>
                               </div>
                               <div>
-                                <p className="text-gray-600">ICON 45%</p>
-                                <p className="text-gray-200 font-medium">{d.ens!.icon != null ? `${(Math.round(d.ens!.icon * 10) / 10).toFixed(1)}°` : "—"}</p>
+                                <p className="text-sky-600">GFS 30%</p>
+                                <p className="text-gray-200 font-medium">{d.ens!.gfs       != null ? `${(Math.round(d.ens!.gfs       * 10) / 10).toFixed(1)}°` : "—"}</p>
                               </div>
                               <div>
-                                <p className="text-gray-600">GEM 25%</p>
-                                <p className="text-gray-200 font-medium">{d.ens!.gem != null ? `${(Math.round(d.ens!.gem * 10) / 10).toFixed(1)}°` : "—"}</p>
+                                <p className="text-gray-500">ICON 25%</p>
+                                <p className="text-gray-200 font-medium">{d.ens!.icon      != null ? `${(Math.round(d.ens!.icon      * 10) / 10).toFixed(1)}°` : "—"}</p>
+                              </div>
+                              <div>
+                                <p className="text-gray-500">GEM 15%</p>
+                                <p className="text-gray-200 font-medium">{d.ens!.gem       != null ? `${(Math.round(d.ens!.gem       * 10) / 10).toFixed(1)}°` : "—"}</p>
                               </div>
                             </div>
+                            {/* Ensemble consensus */}
                             <div className="border-t border-white/5 pt-1 flex items-center justify-between text-[10px]">
                               <span className="text-gray-500">Consensus</span>
                               <div className="text-right">
@@ -302,9 +312,10 @@ export default function Forecasts() {
                                 )}
                               </div>
                             </div>
+                            {/* Final bot blend */}
                             {d.blended != null && (
-                              <div className="flex items-center justify-between text-[10px]">
-                                <span className="text-gray-600">Bot blended{ensBias !== 0 ? ` (+${ensBias}° bias)` : ""}</span>
+                              <div className="flex items-center justify-between text-[10px] border-t border-white/5 pt-1">
+                                <span className="text-gray-600">Bot blend NWS·Ens{ensBias !== 0 ? ` +${ensBias}°` : ""}</span>
                                 <span className="text-purple-300 font-semibold">{d.blended}°F</span>
                               </div>
                             )}

@@ -182,38 +182,49 @@ export const botRouter = router({
     return db.getLatestForecasts();
   }),
 
-  // Returns Open-Meteo multi-model ensemble data for all cities (cached 20 min)
+  // Returns Open-Meteo 5-model ensemble for all cities (cached 20 min).
   // Fetches today, tomorrow, and day+2 — matching what the bot uses internally per scan.
+  // Cities are processed in batches of 5 to avoid flooding Open-Meteo with 300+ simultaneous
+  // requests (25 cities × 3 dates × 4 models). Batch size 5 = max 60 concurrent calls.
   getEnsembleForecasts: protectedProcedure.query(async () => {
-    const results = await Promise.allSettled(
-      Object.values(CITIES).map(async (city) => {
-        const now = Date.now();
-        const today       = new Date(now).toLocaleDateString("en-CA", { timeZone: city.timezone });
-        const tomorrow    = new Date(now + 86400000).toLocaleDateString("en-CA", { timeZone: city.timezone });
-        const dayPlusTwo  = new Date(now + 172800000).toLocaleDateString("en-CA", { timeZone: city.timezone });
+    const cities = Object.values(CITIES);
+    const BATCH_SIZE = 5;
+    const allResults: any[] = [];
 
-        const [ensToday, ensTomorrow, ensDayPlusTwo] = await Promise.allSettled([
-          getEnsembleForecast(city.lat, city.lon, today, city.timezone),
-          getEnsembleForecast(city.lat, city.lon, tomorrow, city.timezone),
-          getEnsembleForecast(city.lat, city.lon, dayPlusTwo, city.timezone),
-        ]);
+    for (let i = 0; i < cities.length; i += BATCH_SIZE) {
+      const batch = cities.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.allSettled(
+        batch.map(async (city) => {
+          const now = Date.now();
+          const today      = new Date(now).toLocaleDateString("en-CA", { timeZone: city.timezone });
+          const tomorrow   = new Date(now + 86400000).toLocaleDateString("en-CA", { timeZone: city.timezone });
+          const dayPlusTwo = new Date(now + 172800000).toLocaleDateString("en-CA", { timeZone: city.timezone });
 
-        return {
-          cityCode: city.code,
-          ensemble:           ensToday.status      === "fulfilled" ? ensToday.value      : null,
-          tomorrowEnsemble:   ensTomorrow.status   === "fulfilled" ? ensTomorrow.value   : null,
-          dayPlusTwoEnsemble: ensDayPlusTwo.status === "fulfilled" ? ensDayPlusTwo.value : null,
-          date:        today,
-          tomorrowDate: tomorrow,
-          dayPlusTwoDate: dayPlusTwo,
-          directionBias: city.directionBias,
-          sigma: city.sigma,
-        };
-      })
-    );
-    return results
-      .filter((r) => r.status === "fulfilled")
-      .map((r) => (r as PromiseFulfilledResult<any>).value);
+          const [ensToday, ensTomorrow, ensDayPlusTwo] = await Promise.allSettled([
+            getEnsembleForecast(city.lat, city.lon, today,      city.timezone),
+            getEnsembleForecast(city.lat, city.lon, tomorrow,   city.timezone),
+            getEnsembleForecast(city.lat, city.lon, dayPlusTwo, city.timezone, true),
+          ]);
+
+          return {
+            cityCode:           city.code,
+            ensemble:           ensToday.status      === "fulfilled" ? ensToday.value      : null,
+            tomorrowEnsemble:   ensTomorrow.status   === "fulfilled" ? ensTomorrow.value   : null,
+            dayPlusTwoEnsemble: ensDayPlusTwo.status === "fulfilled" ? ensDayPlusTwo.value : null,
+            date:           today,
+            tomorrowDate:   tomorrow,
+            dayPlusTwoDate: dayPlusTwo,
+            directionBias:  city.directionBias,
+            sigma:          city.sigma,
+          };
+        })
+      );
+      for (const r of batchResults) {
+        if (r.status === "fulfilled") allResults.push(r.value);
+      }
+    }
+
+    return allResults;
   }),
 
   getCities: protectedProcedure.query(async () => {
