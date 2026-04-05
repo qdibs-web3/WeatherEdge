@@ -36,12 +36,12 @@ jobs:
 
           # Copy build output to nginx directory
           sudo rm -rf /var/www/predictiveapex.club/*
-          sudo cp -r dist/* /var/www/predictiveapex.club/
+          sudo cp -r dist/public/* /var/www/predictiveapex.club/
           sudo chown -R www-data:www-data /var/www/predictiveapex.club
 
           # Reload nginx
           sudo nginx -t && sudo systemctl reload nginx
 
-          # Restart PM2 if you have a backend process
-          # pm2 restart weatheredge-api || true
-          # pm2 save
+          # Restart PM2 backend
+          pm2 restart weatheredge-api || true
+          pm2 save
