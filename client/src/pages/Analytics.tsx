@@ -41,7 +41,7 @@ export default function Analytics() {
   const openPotentialPayout = openStake + openPotentialProfit;
 
   return (
-    <div className="p-6 space-y-6 max-w-[70%] mx-auto">
+    <div className="p-6 space-y-6">
       <div>
         <h1 className="text-xl font-bold text-white">Analytics</h1>
         <p className="text-sm text-gray-400">Performance metrics and trading statistics</p>

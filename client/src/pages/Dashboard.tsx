@@ -108,7 +108,7 @@ export default function Dashboard() {
   const tradesThisSession = (status as any)?.tradesThisSession ?? 0;
 
   return (
-    <div className="p-6 space-y-5 max-w-[72%] mx-auto">
+    <div className="p-6 space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

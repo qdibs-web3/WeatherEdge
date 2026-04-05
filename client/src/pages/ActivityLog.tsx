@@ -63,7 +63,7 @@ export default function ActivityLog() {
   const signalCount = (logs ?? []).filter((l: any) => l.level === "signal").length;
 
   return (
-    <div className="p-6 space-y-4 max-w-[80%] mx-auto">
+    <div className="p-6 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

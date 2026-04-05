@@ -115,7 +115,7 @@ export default function BotControl() {
   const isRunning = status?.running ?? false;
 
   return (
-    <div className="p-6 space-y-6 max-w-[70%] mx-auto">
+    <div className="p-6 space-y-6">
       <div>
         <h1 className="text-xl font-bold text-white">Bot Control</h1>
         <p className="text-sm text-gray-400">Manage, configure, and monitor your weather trading bot</p>

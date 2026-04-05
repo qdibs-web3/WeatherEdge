@@ -114,7 +114,7 @@ export default function Charts() {
   const roi      = stats?.roi ?? 0;
 
   return (
-    <div className="p-6 space-y-5 max-w-[92%] mx-auto">
+    <div className="p-6 space-y-5">
 
       {/* ── Header + Filters ── */}
       <div className="flex items-center justify-between">

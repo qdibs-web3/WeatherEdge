@@ -138,7 +138,7 @@ export default function Trades() {
   const chartPositive = chartData.length === 0 || chartData[chartData.length - 1]?.cumPnl >= 0;
 
   return (
-    <div className="p-6 space-y-6 max-w-[70%] mx-auto">
+    <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Trade History</h1>
