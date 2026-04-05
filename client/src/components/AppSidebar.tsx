@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { trpc } from "@/lib/trpc";
-import { Home, Bot, TrendingUp, BarChart3, CloudSun, ScrollText, Settings, LogOut, User, ChevronDown, Activity } from "lucide-react";
+import { Home, Bot, TrendingUp, BarChart3, CloudSun, BarChart2, Settings, LogOut, User, ChevronDown, Activity } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },
@@ -12,7 +12,7 @@ const navigation = [
   { name: "Trades", href: "/trades", icon: TrendingUp },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Forecasts", href: "/forecasts", icon: CloudSun },
-  { name: "Activity Log", href: "/activity", icon: ScrollText },
+  { name: "Charts", href: "/charts", icon: BarChart2 },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 

@@ -11,7 +11,7 @@ import Trades from "./pages/Trades";
 import Analytics from "./pages/Analytics";
 import Forecasts from "./pages/Forecasts";
 import Settings from "./pages/Settings";
-import ActivityLog from "./pages/ActivityLog";
+import Charts from "./pages/Charts";
 import NotFound from "./pages/NotFound";
 import ErrorBoundary from "./components/ErrorBoundary";
 import "./index.css";
@@ -33,7 +33,7 @@ function Router() {
       <Route path="/trades"><ProtectedRoute><DashboardLayout><Trades /></DashboardLayout></ProtectedRoute></Route>
       <Route path="/analytics"><ProtectedRoute><DashboardLayout><Analytics /></DashboardLayout></ProtectedRoute></Route>
       <Route path="/forecasts"><ProtectedRoute><DashboardLayout><Forecasts /></DashboardLayout></ProtectedRoute></Route>
-      <Route path="/activity"><ProtectedRoute><DashboardLayout><ActivityLog /></DashboardLayout></ProtectedRoute></Route>
+      <Route path="/charts"><ProtectedRoute><DashboardLayout><Charts /></DashboardLayout></ProtectedRoute></Route>
       <Route path="/settings"><ProtectedRoute><DashboardLayout><Settings /></DashboardLayout></ProtectedRoute></Route>
       <Route component={NotFound} />
     </Switch>

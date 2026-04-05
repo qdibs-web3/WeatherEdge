@@ -311,9 +311,12 @@ export const botRouter = router({
 
   // ─── Activity Log ─────────────────────────────────────────────────────────
   getActivityLog: protectedProcedure
-    .input(z.object({ limit: z.number().default(100) }).optional())
+    .input(z.object({
+      limit:  z.number().default(500),
+      level:  z.string().optional(),
+    }).optional())
     .query(async ({ ctx, input }) => {
-      return db.getBotLogs(ctx.user.id, input?.limit ?? 100);
+      return db.getBotLogs(ctx.user.id, input?.limit ?? 500, input?.level);
     }),
 
   // ─── Latest Signals ────────────────────────────────────────────────────────

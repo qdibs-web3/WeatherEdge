@@ -827,7 +827,8 @@ export class WeatherBot {
         if (yesAsk > effectiveMaxPrice)        reasons.push(`price ${yesAsk}¢>cap`);
         if (reasons.length === 0 && yesEV < effectiveEvThreshold) reasons.push(`EV ${yesEV.toFixed(1)}¢<${effectiveEvThreshold}¢`);
         const divTag = divergenceBlend > 0 ? ` divAdj=${(ourProbRaw*100).toFixed(0)}%→${(ourProb*100).toFixed(0)}%(${(divergenceBlend*100).toFixed(0)}%pen@${nwsEnsDivergence.toFixed(1)}°F)` : "";
-        console.log(`[WeatherBot]   ${city.code} ${strikeLabel} YES@${yesAsk}¢ | ourP=${(ourProb*100).toFixed(0)}% mktP=${(yesMarketProb*100).toFixed(0)}% edge=${(yesEdge*100).toFixed(1)}% EV=${yesEV.toFixed(1)}¢ safety=${yesSafety.toFixed(2)}σ nws=${marketNwsRaw}°F${divTag}${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
+        const yesLine = `${city.code} ${strikeLabel} YES@${yesAsk}¢ | ourP=${(ourProb*100).toFixed(0)}% mktP=${(yesMarketProb*100).toFixed(0)}% edge=${(yesEdge*100).toFixed(1)}% EV=${yesEV.toFixed(1)}¢ safety=${yesSafety.toFixed(2)}σ nws=${marketNwsRaw}°F${divTag}${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`;
+        console.log(`[WeatherBot]   ${yesLine}`);
       }
       if (this.openPositionCityDates.get(cityDateKey)?.has("no")) {
         console.log(`[WeatherBot]   ${city.code} ${strikeLabel} YES — skip: would hedge existing NO position (conflict guard)`);
@@ -885,7 +886,8 @@ export class WeatherBot {
         if (reasons.length === 0 && noEV < effectiveEvThreshold) reasons.push(`EV ${noEV.toFixed(1)}¢<${effectiveEvThreshold}¢`);
         const noRawProb = 1 - ourProbRaw;
         const noDivTag = divergenceBlend > 0 ? ` divAdj=${(noRawProb*100).toFixed(0)}%→${(noProb*100).toFixed(0)}%(${(divergenceBlend*100).toFixed(0)}%pen@${nwsEnsDivergence.toFixed(1)}°F)` : "";
-        console.log(`[WeatherBot]   ${city.code} ${strikeLabel}  NO@${noAsk}¢ | ourP=${(noProb*100).toFixed(0)}% mktP=${(noMarketProb*100).toFixed(0)}% edge=${(noEdge*100).toFixed(1)}% EV=${noEV.toFixed(1)}¢ safety=${noSafety.toFixed(2)}σ${noDivTag}${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`);
+        const noLine = `${city.code} ${strikeLabel}  NO@${noAsk}¢ | ourP=${(noProb*100).toFixed(0)}% mktP=${(noMarketProb*100).toFixed(0)}% edge=${(noEdge*100).toFixed(1)}% EV=${noEV.toFixed(1)}¢ safety=${noSafety.toFixed(2)}σ${noDivTag}${reasons.length ? " — SKIP: " + reasons.join(", ") : " — ✓ PASS"}`;
+        console.log(`[WeatherBot]   ${noLine}`);
       }
 
       if (this.openPositionCityDates.get(cityDateKey)?.has("yes")) {
@@ -1119,4 +1121,5 @@ export class WeatherBot {
       // Non-fatal
     }
   }
+
 }

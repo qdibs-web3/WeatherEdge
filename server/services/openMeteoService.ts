@@ -10,11 +10,13 @@
  *   icon_global  — German DWD ICON, proven global coverage
  *   gem_seamless — Canadian GEM, independent lineage from GFS
  *
- * NOTE: ecmwf_ifs04 was removed. While it exists on the free tier, it proved
- * unreliable in practice and was causing all-model failures due to error responses
- * that coincided with the other model calls. Stick to the four proven models.
+ * All four models are fetched in a SINGLE HTTP request per city-date by
+ * comma-separating the models parameter. Open-Meteo returns each model's data
+ * under a suffixed key: temperature_2m_max_{model_id}. This reduces API calls
+ * from 4× per city-date to 1×, eliminating the 429 burst-limit failures that
+ * occurred when 25 cities × 3 dates × 4 models = 300 parallel requests fired.
  *
- * Consensus = weighted average of available models (re-normalizes if any fail).
+ * Consensus = weighted average of available models (re-normalizes if any missing).
  * Spread    = max − min across models = uncertainty proxy used by weatherBot.
  */
 
@@ -29,6 +31,8 @@ const MODEL_WEIGHTS: Record<string, number> = {
   icon_global:  0.25,   // DWD ICON — solid global coverage
   gem_seamless: 0.15,   // Canadian GEM — independent lineage
 };
+
+const MODEL_IDS = Object.keys(MODEL_WEIGHTS);
 
 export interface EnsembleForecast {
   bestMatch:  number | null;   // Open-Meteo proven blend
@@ -48,7 +52,8 @@ const CACHE_TTL_MS = 20 * 60 * 1000;
 
 /**
  * Fetch ensemble forecast for a given lat/lon and date.
- * Returns null only if ALL models fail — caller degrades to NWS-only.
+ * Makes a single HTTP request for all four models combined.
+ * Returns null only if the request fails entirely — caller degrades to NWS-only.
  */
 export async function getEnsembleForecast(
   lat: number,
@@ -61,25 +66,14 @@ export async function getEnsembleForecast(
   const cached = cache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const modelIds = Object.keys(MODEL_WEIGHTS);
-
-  // Fetch all models in parallel — each fails independently
-  const results = await Promise.allSettled(
-    modelIds.map((id) => fetchModelTemp(lat, lon, timezone, date, id))
-  );
-
-  const modelValues: Record<string, number | null> = {};
-  modelIds.forEach((id, i) => {
-    modelValues[id] = results[i].status === "fulfilled" ? (results[i] as PromiseFulfilledResult<number>).value : null;
-  });
-
-  // Log any failures
-  modelIds.forEach((id, i) => {
-    if (results[i].status === "rejected") {
-      const reason = (results[i] as PromiseRejectedResult).reason;
-      console.warn(`[Ensemble] ${id} failed for ${lat.toFixed(2)},${lon.toFixed(2)} ${date}: ${reason?.message ?? reason}`);
-    }
-  });
+  // Single request — all four models in one call
+  let modelValues: Record<string, number | null>;
+  try {
+    modelValues = await fetchAllModelsTemp(lat, lon, timezone, date);
+  } catch (err: any) {
+    console.error(`[Ensemble] ALL models failed for ${lat.toFixed(2)},${lon.toFixed(2)} on ${date} — ${err.message}`);
+    return null;
+  }
 
   // Build weighted consensus from available models
   const available: { value: number; weight: number }[] = [];
@@ -89,7 +83,7 @@ export async function getEnsembleForecast(
   }
 
   if (available.length === 0) {
-    console.error(`[Ensemble] ALL models failed for ${lat.toFixed(2)},${lon.toFixed(2)} on ${date} — returning null`);
+    console.error(`[Ensemble] ALL models returned no data for ${lat.toFixed(2)},${lon.toFixed(2)} on ${date} — returning null`);
     return null;
   }
 
@@ -116,13 +110,21 @@ export async function getEnsembleForecast(
   return result;
 }
 
-async function fetchModelTemp(
+/**
+ * Single HTTP request fetching all four models at once.
+ * Open-Meteo returns multi-model data with suffixed keys:
+ *   daily.temperature_2m_max_best_match
+ *   daily.temperature_2m_max_gfs_seamless
+ *   daily.temperature_2m_max_icon_global
+ *   daily.temperature_2m_max_gem_seamless
+ * A missing or null entry means that model had no data for that date.
+ */
+async function fetchAllModelsTemp(
   lat: number,
   lon: number,
   timezone: string,
-  date: string,
-  model: string
-): Promise<number> {
+  date: string
+): Promise<Record<string, number | null>> {
   const url = new URL(OPEN_METEO_BASE);
   url.searchParams.set("latitude",         lat.toString());
   url.searchParams.set("longitude",        lon.toString());
@@ -131,20 +133,24 @@ async function fetchModelTemp(
   url.searchParams.set("timezone",         timezone);
   url.searchParams.set("start_date",       date);
   url.searchParams.set("end_date",         date);
-  url.searchParams.set("models",           model);
+  url.searchParams.set("models",           MODEL_IDS.join(","));
 
-  const res = await axios.get(url.toString(), { timeout: 10000 });
+  const res = await axios.get(url.toString(), { timeout: 15000 });
 
-  // Open-Meteo sometimes returns HTTP 200 with an error body
   if (res.data?.error) {
     throw new Error(`API error: ${res.data.reason ?? "unknown"}`);
   }
 
-  const maxTemps: number[] = res.data?.daily?.temperature_2m_max ?? [];
-  if (!maxTemps.length || maxTemps[0] == null) {
-    throw new Error(`No temperature_2m_max data returned`);
+  const daily = res.data?.daily ?? {};
+  const result: Record<string, number | null> = {};
+
+  for (const modelId of MODEL_IDS) {
+    const key  = `temperature_2m_max_${modelId}`;
+    const vals: (number | null)[] = daily[key] ?? [];
+    result[modelId] = vals.length > 0 && vals[0] != null ? vals[0] : null;
   }
-  return maxTemps[0];
+
+  return result;
 }
 
 export function clearEnsembleCache() {

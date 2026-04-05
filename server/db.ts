@@ -122,6 +122,7 @@ export type BotLog = {
   level: string;
   message: string;
   context: any;
+  cityCode: string | null;   // extracted from context.cityCode for quick filtering
   createdAt: Date;
 };
 
@@ -601,28 +602,38 @@ export async function insertBotLog(data: {
   userId: number;
   level: string;
   message: string;
+  cityCode?: string;
   context?: any;
 }): Promise<void> {
+  const ctx = data.cityCode
+    ? { ...(data.context ?? {}), cityCode: data.cityCode }
+    : (data.context ?? null);
   await exec(
     "INSERT INTO bot_logs_v2 (user_id, level, message, context, created_at) VALUES (?, ?, ?, ?, NOW())",
-    [data.userId, data.level, data.message, data.context ? JSON.stringify(data.context) : null]
+    [data.userId, data.level, data.message, ctx ? JSON.stringify(ctx) : null]
   );
 }
 
-export async function getBotLogs(userId: number, limit = 100): Promise<BotLog[]> {
-  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 100));
+export async function getBotLogs(userId: number, limit = 200, levelFilter?: string): Promise<BotLog[]> {
+  const safeLimit = Math.max(1, Math.min(2000, Number(limit) || 200));
   const rows = await q(
-    `SELECT * FROM bot_logs_v2 WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit}`,
-    [userId]
+    levelFilter && levelFilter !== "all"
+      ? `SELECT * FROM bot_logs_v2 WHERE user_id = ? AND level = ? ORDER BY created_at DESC LIMIT ${safeLimit}`
+      : `SELECT * FROM bot_logs_v2 WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit}`,
+    levelFilter && levelFilter !== "all" ? [userId, levelFilter] : [userId]
   );
-  return rows.map((r) => ({
-    id: r.id,
-    userId: r.user_id,
-    level: r.level,
-    message: r.message,
-    context: r.context ? (typeof r.context === "string" ? JSON.parse(r.context) : r.context) : null,
-    createdAt: r.created_at,
-  }));
+  return rows.map((r) => {
+    const ctx = r.context ? (typeof r.context === "string" ? JSON.parse(r.context) : r.context) : null;
+    return {
+      id: r.id,
+      userId: r.user_id,
+      level: r.level,
+      message: r.message,
+      context: ctx,
+      cityCode: ctx?.cityCode ?? null,
+      createdAt: r.created_at,
+    };
+  });
 }
 
 // ─── City Stats ───────────────────────────────────────────────────────────────
